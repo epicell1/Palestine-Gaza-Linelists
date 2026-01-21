@@ -1,0 +1,329 @@
+---
+title: "Gaza Nutrition Surveillance (5-10 years) Analysis"
+author: "MSF OCBA"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 10,
+  fig.height = 6
+)
+
+setwd("C:/Users/msfe-jerusalem-epi/OneDrive - MSF/1_Epidemiology/3_Projects/12_Gaza Linelists/NUTRITION SURVEILLANCE 5-10 YEARS")
+
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(kableExtra)
+library(ggplot2)
+library(readxl)
+
+data <- read_xlsx("DATABASE_NUTRITION_SURVEILLANCE_5_TO_10_YEARS.xlsx")
+
+# Check the structure of data
+str(data)
+head(data)
+
+# Check column names
+names(data)
+
+# First, let's see what unique indicators you have
+unique_indicators <- unique(data$INDICATOR)
+print(unique_indicators)
+
+# Based on your data structure, clean the indicators
+data <- data %>%
+  mutate(
+    # Clean up indicator names
+    INDICATOR_CLEAN = case_when(
+      str_detect(INDICATOR, "MUAC >=") ~ "Normal MUAC",
+      str_detect(INDICATOR, "MUAC <") ~ "Low MUAC",
+      str_detect(INDICATOR, "Oedema") ~ "Oedema",
+      str_detect(INDICATOR, "referred for treatment") ~ "Referred",
+      str_detect(INDICATOR, "in the program") ~ "In Program",
+      TRUE ~ INDICATOR  # Keep original if no match
+    ),
+    # Create age groups
+    AGE_GROUP = case_when(
+      AGE_YEARS == 5 ~ "5 years",
+      AGE_YEARS == 6 ~ "6 years", 
+      AGE_YEARS == 7 ~ "7 years",
+      AGE_YEARS == 8 ~ "8 years",
+      AGE_YEARS == 9 ~ "9 years",
+      AGE_YEARS == 10 ~ "10 years",
+      TRUE ~ as.character(AGE_YEARS)  # Handle any unexpected ages
+    ),
+    # Ensure VALUE is numeric
+    VALUE = as.numeric(VALUE)
+  ) %>%
+  mutate(EPI_WEEK = paste(YEAR, sprintf("%02d", EPI_WEEK), sep = "-"))
+
+# Check for missing values
+missing_values <- colSums(is.na(data))
+print("Missing values per column:")
+print(missing_values)
+
+# Summary of cleaned data
+summary(data)
+
+```
+
+```{r epi_curve_complete, fig.width=8.5, fig.height=4, echo = FALSE, warning=FALSE, message=FALSE}
+
+# Calculate total cases per week per facility
+weekly_totals <- data %>%
+  group_by(HEALTH_FACILITY, EPI_WEEK) %>%
+  summarise(Total_Cases = sum(VALUE, na.rm = TRUE), .groups = 'drop')
+
+# Create epi curve with data labels
+ggplot(weekly_totals, aes(x = EPI_WEEK, y = Total_Cases, 
+                          color = HEALTH_FACILITY, 
+                          group = HEALTH_FACILITY)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  # Add data labels - position them above the points
+  geom_text(aes(label = Total_Cases), 
+            vjust = -0.8,          # Position above points
+            hjust = 0.5,           # Center horizontally
+            size = 3,            # Adjust font size
+            # fontface = "bold",     # Make labels bold
+            check_overlap = TRUE, # Allow overlapping labels
+            show.legend = FALSE) + # Don't show in legend
+  labs(
+    title = "Epidemiological Curve: Total Number of Screened Patients",
+    subtitle = "By Health Facility and Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Total Number of Cases",
+    color = "Health Facility"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()  # Cleaner look
+  ) +
+  # scale_x_continuous(breaks = unique(weekly_totals$EPI_WEEK)) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) + # Make room for labels
+  scale_color_brewer(palette = "Set1")
+
+```
+
+```{r epi_curve_indicator, fig.width=8.5, fig.height=8, echo = FALSE, warning=FALSE, message=FALSE}
+# Summarize by indicator type
+indicator_totals <- data %>%
+  group_by(HEALTH_FACILITY, EPI_WEEK, INDICATOR_CLEAN) %>%
+  summarise(Total = sum(VALUE, na.rm = TRUE), .groups = 'drop')
+
+# Define the desired order of indicators
+desired_order <- c("Normal MUAC", "Low MUAC", "Oedema", "In Program", "Referred")
+
+# Filter to main indicators and set the factor order
+indicator_totals_filtered <- indicator_totals %>%
+  filter(INDICATOR_CLEAN %in% desired_order) %>%
+  mutate(
+    INDICATOR_CLEAN = factor(INDICATOR_CLEAN, 
+                             levels = desired_order,
+                             ordered = TRUE)
+  )
+
+# Convert EPI_WEEK to date (first day of each epi week)
+indicator_totals_filtered <- indicator_totals_filtered %>%
+  mutate(
+    EPI_DATE = parse_date_time(paste0(EPI_WEEK, "-1"), "Y-W-u")
+    # Or alternative if above doesn't work:
+    # EPI_DATE = ymd(paste(str_sub(EPI_WEEK, 1, 4), "01", "01")) + 
+    #           weeks(as.numeric(str_sub(EPI_WEEK, 6, 7)) - 1)
+  )
+
+ggplot(indicator_totals_filtered, 
+       aes(x = EPI_DATE, y = Total, color = HEALTH_FACILITY, group = HEALTH_FACILITY)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ INDICATOR_CLEAN, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Epidemiological Curves by Indicator Type",
+    subtitle = "Comparison Between Health Facilities",
+    x = "Epidemiological Week",
+    y = "Number of Cases",
+    color = "Health Facility"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom",
+    strip.background = element_rect(fill = "lightgray"),
+    strip.text = element_text(face = "bold")
+  ) +
+  scale_x_date(
+    date_breaks = "4 weeks",  # Show label every 4 weeks
+    date_labels = "%Y-W%U"    # Format as "2024-W01"
+  ) +
+  scale_color_brewer(palette = "Set1")
+```
+
+```{r metrics, include = FALSE, fig.width=8.5, fig.height=6, echo = FALSE, warning=FALSE, message=FALSE}
+# Calculate screening coverage and malnutrition rates
+kpi_data <- data %>%
+  group_by(HEALTH_FACILITY, EPI_WEEK) %>%
+  summarise(
+    # Screening indicators
+    Total_Screened = sum(VALUE[INDICATOR_CLEAN %in% c("Normal MUAC", "Low MUAC", "Oedema")], 
+                        na.rm = TRUE),
+    Total_Low_MUAC = sum(VALUE[INDICATOR_CLEAN == "Low MUAC"], na.rm = TRUE),
+    Total_Oedema = sum(VALUE[INDICATOR_CLEAN == "Oedema"], na.rm = TRUE),
+    Total_Referred = sum(VALUE[INDICATOR_CLEAN == "Referred"], na.rm = TRUE),
+    Total_In_Program = sum(VALUE[INDICATOR_CLEAN == "In Program"], na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    # Calculate rates
+    Low_MUAC_Rate = ifelse(Total_Screened > 0, 
+                           round(Total_Low_MUAC / Total_Screened * 100, 1), 0),
+    Oedema_Rate = ifelse(Total_Screened > 0, 
+                         round(Total_Oedema / Total_Screened * 100, 1), 0),
+    GAM_Rate = round((Total_Low_MUAC + Total_Oedema) / Total_Screened * 100, 1),
+    Referral_Rate = ifelse((Total_Low_MUAC + Total_Oedema) > 0, 
+                           round(Total_Referred / (Total_Low_MUAC + Total_Oedema) * 100, 1), 0),
+    Enrollment_Rate = ifelse(Total_Referred > 0, 
+                             round(Total_In_Program / Total_Referred * 100, 1), 0)
+  )
+
+# Display latest week KPIs
+latest_week <- max(kpi_data$EPI_WEEK)
+latest_kpi <- kpi_data %>%
+  filter(EPI_WEEK == latest_week)
+
+kable(latest_kpi, caption = paste("Key Performance Indicators - Week", latest_week)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), font_size = 10)
+
+```
+
+```{r gam_rate, fig.width=8.5, fig.height=6, echo = FALSE, warning=FALSE, message=FALSE}
+
+# Convert EPI_WEEK to date
+kpi_data <- kpi_data %>%
+  mutate(
+    EPI_DATE = parse_date_time(paste0(EPI_WEEK, "-1"), "Y-W-u")
+    # Alternative if above doesn't work:
+    # YEAR = as.numeric(substr(EPI_WEEK, 1, 4)),
+    # WEEK = as.numeric(substr(EPI_WEEK, 6, 7)),
+    # EPI_DATE = as.Date(paste(YEAR, 1, 1, sep = "-")) + weeks(WEEK - 1)
+  ) %>%
+  arrange(HEALTH_FACILITY, EPI_DATE)
+
+# Plot with date conversion
+ggplot(kpi_data, aes(x = EPI_DATE, y = GAM_Rate, 
+                     color = HEALTH_FACILITY, 
+                     group = HEALTH_FACILITY)) +  # ADDED group aesthetic
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  # Add data labels with rounded values
+  geom_text(aes(label = sprintf("%.1f%%", GAM_Rate)), 
+            vjust = -1.2,          # Position above points
+            hjust = 0.5,           # Center horizontally
+            size = 3,              # Font size
+            check_overlap = TRUE,  # Allow overlapping labels
+            show.legend = FALSE) + # Don't show in legend
+  # Threshold lines
+  geom_hline(yintercept = 5, linetype = "dashed", color = "red", alpha = 0.5) +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "darkred", alpha = 0.5) +
+  # Threshold labels
+  annotate("text", x = min(kpi_data$EPI_DATE), y = 5.5, 
+           label = "5% threshold", hjust = 0, size = 3, 
+           color = "red", fontface = "italic") +
+  annotate("text", x = min(kpi_data$EPI_DATE), y = 10.5, 
+           label = "10% threshold", hjust = 0, size = 3, 
+           color = "darkred", fontface = "italic") +
+  labs(
+    title = "Global Acute Malnutrition (GAM) Rate Trend",
+    subtitle = "Includes Low MUAC + Oedema cases",
+    x = "Epidemiological Week",
+    y = "GAM Rate (%)",
+    color = "Health Facility"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x labels
+  ) +
+  scale_x_date(
+    date_breaks = "2 weeks",           # Label every 2 weeks
+    date_labels = "%Y-W%U"             # Format as "2024-W01"
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.1, 0.2)),  # Make room for labels
+    limits = c(0, max(kpi_data$GAM_Rate) * 1.2)  # Add 20% headroom
+  ) +
+  scale_color_brewer(palette = "Set1")
+
+```
+
+```{r low_muac, fig.width=8.5, fig.height=6, echo = FALSE, warning=FALSE, message=FALSE}
+
+# Convert EPI_WEEK to date and process data
+low_muac_data <- data %>%
+  filter(INDICATOR_CLEAN == "Low MUAC") %>%
+  group_by(HEALTH_FACILITY, EPI_WEEK, AGE_GROUP) %>%
+  summarise(Total_Low_MUAC = sum(VALUE, na.rm = TRUE), .groups = 'drop') %>% 
+  mutate(
+    AGE_GROUP = factor(AGE_GROUP, 
+                       levels = c("5 years", "6 years", "7 years", 
+                                  "8 years", "9 years", "10 years"),
+                       ordered = TRUE),
+    # Convert EPI_WEEK (YYYY-WW) to date
+    EPI_DATE = parse_date_time(paste0(EPI_WEEK, "-1"), "Y-W-u")
+  ) %>%
+  arrange(HEALTH_FACILITY, EPI_DATE, AGE_GROUP)
+
+ggplot(low_muac_data, aes(x = EPI_DATE, y = Total_Low_MUAC, fill = AGE_GROUP)) +
+  geom_col(position = "stack") +
+  # Add text labels in the middle of each segment
+  geom_text(aes(label = ifelse(Total_Low_MUAC > 0, Total_Low_MUAC, "")),
+            position = position_stack(vjust = 0.5),  # Center in each segment
+            size = 3,
+            color = "white",  # White text for contrast
+            fontface = "bold",
+            check_overlap = FALSE) +
+  facet_wrap(~ HEALTH_FACILITY, ncol = 1) +
+  labs(
+    title = "Low MUAC Cases by Age Group and Week",
+    subtitle = "Stacked Bar Chart Showing Age Distribution",
+    x = "Epidemiological Week",
+    y = "Number of Low MUAC Cases",
+    fill = "Age Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x labels
+  ) +
+  scale_x_date(
+    date_breaks = "2 weeks",           # Show label every 2 weeks
+    date_labels = "%Y-W%U"             # Format as "2024-W01"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+
+

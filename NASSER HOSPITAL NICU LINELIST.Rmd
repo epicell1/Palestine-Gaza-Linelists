@@ -1,0 +1,1876 @@
+---
+title: "Al Nasser Hospital NICU Linelist Analysis"
+author: "MSF OCBA"
+date: "Report generated on `r format(Sys.Date(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+params:
+  output_file: "North_Gaza_NICU_Linelist_Analysis_`r format(Sys.Date(), '%Y%m%d')`.html"
+---
+
+```{r setup, include=FALSE}
+
+# Set working directory
+setwd("C:/Users/msfe-jerusalem-epi/OneDrive - MSF/1_Epidemiology/3_Projects/12_Gaza Linelists/GAZA NICU LINELIST")
+
+# Install pacman if not already installed
+if (!require("pacman")) install.packages("pacman")
+
+# Use pacman to load multiple libraries (will install any missing ones)
+pacman::p_load(
+  readxl, 
+  tidyverse, 
+  here
+)
+
+# Read the XLSX file skipping first 2 rows
+linelist_file <- "LINELIST NICU GAZA_V2.2 Nasser Hospital.xlsx"
+linelist_data <- read_excel(linelist_file, skip = 2)
+
+# Assign the correct number of names
+colnames(linelist_data) <- c(
+    "NUMBER", "MOTHER_INITIAL", "DATE_OF_ADMISSION", "DEPARTMENT", "DATE_OF_BIRTH", 
+  "GENDER",  "PLACE_OF_BIRTH", "GESTATIONAL_AGE_WEEKS", "WEIGHT_GRAMS",
+    "ADMISSION_REASON", "SECONDARY_ADMISSION_REASON", "SPECIFY" , "OUTCOME", "DATE_OF_EXIT", 
+    "MOTHER_AGE", "MOTHER_MUAC", "MOTHER_NUT_PROGRAM",
+    "COMMENTS", "AGE_DAYS", "LENGTH_OF_STAY"
+  )
+
+# Omit unnecessary columns
+linelist_data <- linelist_data[1:20]
+
+# Exclude example row
+linelist_data <- linelist_data %>% filter(!is.na(NUMBER)) %>% 
+  filter(NUMBER != "EXAMPLE")
+
+# Clean PLACE_OF_BIRTH variable
+linelist_data <- linelist_data %>%
+  mutate(
+    PLACE_OF_BIRTH = case_when(
+      # Standardize variations
+      str_detect(toupper(PLACE_OF_BIRTH), "NASSER") ~ "Nasser Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "ICRC.*FIELD") ~ "ICRC Field Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "ICRC$") ~ "ICRC Field Hospital",  # Just "ICRC"
+      str_detect(toupper(PLACE_OF_BIRTH), "UK.*MED") ~ "UK-MED Field Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "PRCS") ~ "PRCS Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "KUWAIT") ~ "Kuwaiti Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "KWAIT") ~ "Kuwaiti Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "AL.*KHAIR") ~ "Al-Khair Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "AMAL") ~ "AMAL Hospital",
+      str_detect(toupper(PLACE_OF_BIRTH), "AL-KHAIR") ~ "Al-Khair Hospital",
+      is.na(PLACE_OF_BIRTH) ~ "Unknown/Not recorded",
+      TRUE ~ str_to_title(PLACE_OF_BIRTH)  # Capitalize properly for any others
+    )
+  )
+
+```
+
+```{r epi_curve, include=FALSE, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+# Create epidemic curve by DATE_OF_ADMISSION
+epi_curve <- linelist_data %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Count admissions by date
+  count(DATE_OF_ADMISSION, name = "DAILY_ADMISSIONS") %>%
+  # Complete the sequence of dates to show zeros for missing dates
+  complete(DATE_OF_ADMISSION = seq(min(DATE_OF_ADMISSION), 
+                                  max(DATE_OF_ADMISSION), 
+                                  by = "day"),
+           fill = list(DAILY_ADMISSIONS = 0))
+
+# Create the epidemic curve plot
+ggplot(epi_curve, aes(x = DATE_OF_ADMISSION, y = DAILY_ADMISSIONS)) +
+  geom_col(fill = "steelblue", alpha = 0.8, width = 0.7) +
+  geom_smooth(method = "loess", se = FALSE, color = "red", linewidth = 1) +
+  labs(title = "Epidemic Curve of Daily NICU Admissions",
+       # subtitle = "Daily admissions to NICU with trend line",
+       x = "Date of Admission",
+       y = "Number of Admissions",
+       caption = paste("Data from:", min(epi_curve$DATE_OF_ADMISSION), 
+                      "to", max(epi_curve$DATE_OF_ADMISSION))) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        panel.grid.minor = element_blank())
+
+```
+
+```{r epi_curve_week, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Manual calculation of epidemiological weeks (Sunday to Saturday)
+calculate_epi_week <- function(date) {
+  date <- as.Date(date)
+  year <- year(date)
+  
+  # Find first Sunday of the year
+  jan1 <- as.Date(paste0(year, "-01-01"))
+  first_sunday <- jan1 + (7 - as.numeric(format(jan1, "%w"))) %% 7
+  
+  # Calculate week number
+  if (date < first_sunday) {
+    # Date is in last week of previous year
+    prev_year <- year - 1
+    prev_jan1 <- as.Date(paste0(prev_year, "-01-01"))
+    prev_first_sunday <- prev_jan1 + (7 - as.numeric(format(prev_jan1, "%w"))) %% 7
+    week_num <- as.integer((date - prev_first_sunday) / 7) + 2
+    week_year <- prev_year
+  } else {
+    week_num <- as.integer((date - first_sunday) / 7) + 2
+    week_year <- year
+  }
+  
+  # Calculate week start (Sunday) and end (Saturday)
+  week_start <- first_sunday + (week_num - 1) * 7
+  week_end <- week_start + 6
+  
+  return(list(
+    year = week_year,
+    week = week_num,
+    start = week_start,
+    end = week_end
+  ))
+}
+
+# Apply to data
+epi_curve_manual <- linelist_data %>%
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  rowwise() %>%
+  mutate(
+    epi_week = list(calculate_epi_week(DATE_OF_ADMISSION))
+  ) %>%
+  unnest_wider(epi_week) %>%
+  # Count by week
+  count(year, week, start, end, name = "WEEKLY_ADMISSIONS") %>%
+  arrange(start) %>%
+  mutate(
+    WEEK_LABEL = paste0("W", sprintf("%02d", week))  # Just "W" followed by week number
+  )
+
+# Calculate median for the median line
+weekly_median <- median(epi_curve_manual$WEEKLY_ADMISSIONS, na.rm = TRUE)
+
+# Create plot with median line
+ggplot(epi_curve_manual, aes(x = start, y = WEEKLY_ADMISSIONS)) +
+  geom_col(fill = "steelblue", alpha = 0.9, width = 6.5) +
+  # Add median line
+  geom_hline(yintercept = weekly_median, 
+             color = "red", 
+             linetype = "dashed", 
+             linewidth = 1.2,
+             alpha = 0.8) +
+  # Add median label
+  annotate("text", 
+           x = min(epi_curve_manual$start), 
+           y = weekly_median + 0.3,
+           label = paste("Median:", weekly_median, "admissions"),
+           hjust = 0,
+           vjust = -0.5,
+           color = "red",
+           # fontface = "bold",
+           size = 4) +
+  geom_text(aes(label = WEEKLY_ADMISSIONS), 
+            vjust = -0.5, 
+            # fontface = "bold", 
+            size = 3.5) +
+  labs(title = "Weekly NICU Admissions - Epidemiological Weeks",
+       # subtitle = "Sunday to Saturday | Median line shown in red",
+       x = "Epidemiological Week",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        panel.grid.minor = element_blank()) +
+  scale_x_date(
+    breaks = epi_curve_manual$start,
+    labels = epi_curve_manual$WEEK_LABEL  # Just shows "W48", "W49", etc.
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)))  # Increased room for labels
+
+```
+
+```{r demographics, echo=FALSE, fig.height=5, fig.width=10, warning=FALSE, message=FALSE, fig.align='center'}
+# Create gender distribution plot with all columns steelblue
+gender_plot <- linelist_data %>%
+  # Clean and categorize gender values
+  mutate(GENDER = case_when(
+    str_detect(toupper(GENDER), "M|MALE|BOY") ~ "Male",
+    str_detect(toupper(GENDER), "F|FEMALE|GIRL") ~ "Female",
+    TRUE ~ "Unknown/Other"
+  )) %>%
+  # Count by gender category
+  count(GENDER, name = "COUNT") %>%
+  # Calculate percentages
+  mutate(PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+         LABEL = paste0(COUNT, " (", PERCENTAGE, "%)")) %>%
+  # Create the plot
+  ggplot(aes(x = GENDER, y = COUNT)) +  # Removed fill = GENDER from aes()
+  geom_col(fill = "steelblue", alpha = 0.8, width = 0.6) +  # Set fill directly to steelblue
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  # scale_fill_brewer(palette = "Set4") +  # Removed this line
+  labs(title = "Sex Distribution",
+       x = "Sex",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        legend.position = "none",
+        panel.grid.major.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))  # Added for label spacing
+
+# Create place of birth distribution plot
+place_of_birth_plot <- linelist_data %>%
+  # Clean and standardize place of birth values
+  mutate(PLACE_OF_BIRTH_CLEAN = case_when(
+    str_detect(toupper(PLACE_OF_BIRTH), "HELOU|AL HELOU") ~ "Al Helou Hospital",
+    str_detect(toupper(PLACE_OF_BIRTH), "SAHABA|AL SAHABA") ~ "Al Sahabi Hospital",
+    str_detect(toupper(PLACE_OF_BIRTH), "SHIFA|AL SHIFA") ~ "Al Shifa Hospital",
+    str_detect(toupper(PLACE_OF_BIRTH), "NASSER|AL NASSER") ~ "Nasser Hospital",
+    is.na(PLACE_OF_BIRTH) ~ "Unknown/Missing",
+    TRUE ~ as.character(PLACE_OF_BIRTH)
+  )) %>%
+  # Count by place of birth
+  count(PLACE_OF_BIRTH_CLEAN, name = "COUNT") %>%
+  # Calculate percentages and order by count in DESCENDING order
+  mutate(PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+         LABEL = paste0(COUNT, " (", PERCENTAGE, "%)"),
+         PLACE_OF_BIRTH_CLEAN = fct_reorder(PLACE_OF_BIRTH_CLEAN, COUNT, .desc = TRUE)) %>%
+  # Create the plot
+  ggplot(aes(x = PLACE_OF_BIRTH_CLEAN, y = COUNT, fill = PLACE_OF_BIRTH_CLEAN)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Place of Birth Distribution",
+       x = "Place of Birth",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        panel.grid.major.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Combine plots side by side
+library(patchwork)
+combined_demographics <- gender_plot + place_of_birth_plot +
+  plot_annotation(title = "Demographics of NICU Admissions",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_demographics)
+```
+
+```{r epi_curve_place_of_birth, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create 100% stacked column chart by EPI WEEK with simplified categories
+epi_curve_place_week_100 <- linelist_data %>%
+  # Clean and categorize place of birth into 3 groups
+  mutate(
+    PLACE_CATEGORY = case_when(
+      str_detect(toupper(PLACE_OF_BIRTH), "NASSER|AL NASSER") ~ "Al Nasser Hospital",
+      is.na(PLACE_OF_BIRTH) | PLACE_OF_BIRTH == "Unknown/Not recorded" ~ "Unknown/Not recorded",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and place category
+  count(WEEK_START, WEEK_LABEL, PLACE_CATEGORY, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           PLACE_CATEGORY,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 5, paste0(PERCENT, "%"), "")  # Only show labels for >=5%
+  ) %>%
+  ungroup() %>%
+  # Order the categories for logical stacking
+  mutate(
+    PLACE_CATEGORY = factor(PLACE_CATEGORY,
+                           levels = c("Other", "Unknown/Not recorded", "Al Nasser Hospital"),
+                           ordered = TRUE)
+  )
+
+# Create color palette for 3 categories
+category_colors <- c(
+  "Al Nasser Hospital" = "#66C2A5FF",  
+  "Unknown/Not recorded" = "#FC8D62FF",  # Amber/Yellow
+  "Other" = "#B3B3B3FF"  # Green
+)
+
+# Create the 100% stacked column chart
+ggplot(epi_curve_place_week_100, 
+       aes(x = WEEK_START, y = PERCENT, fill = PLACE_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments >= 5%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3.2,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  scale_fill_manual(values = category_colors, name = "Place of Birth") +
+  labs(title = "Weekly NICU Admissions by Birth Location",
+       # subtitle = "100% stacked by epidemiological week (Sunday to Saturday)",
+       x = "Epidemiological Week",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_x_date(
+    breaks = unique(epi_curve_place_week_100$WEEK_START),
+    labels = unique(epi_curve_place_week_100$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  guides(fill = guide_legend(nrow = 1, reverse = FALSE))
+
+```
+
+```{r gestational_age, echo=FALSE, fig.height=6, fig.width=10, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create gestational age analysis
+gestational_age_analysis <- linelist_data %>%
+  # Create gestational age categories (keeping NA for missing count)
+  mutate(
+    GESTATIONAL_CATEGORY = case_when(
+      GESTATIONAL_AGE_WEEKS < 28 ~ "<28 (Extremely Preterm)",
+      GESTATIONAL_AGE_WEEKS >= 28 & GESTATIONAL_AGE_WEEKS < 32 ~ "28-31 (Very Preterm)",
+      GESTATIONAL_AGE_WEEKS >= 32 & GESTATIONAL_AGE_WEEKS < 37 ~ "32-36 (Moderate-Late Preterm)",
+      GESTATIONAL_AGE_WEEKS >= 37 ~ "≥37 (Term)",
+      is.na(GESTATIONAL_AGE_WEEKS) ~ "Missing/Not recorded"
+    ),
+    # Ensure categories are ordered correctly
+    GESTATIONAL_CATEGORY = factor(GESTATIONAL_CATEGORY, 
+                                  levels = c("<28 (Extremely Preterm)",
+                                             "28-31 (Very Preterm)",
+                                             "32-36 (Moderate-Late Preterm)",
+                                             "≥37 (Term)",
+                                             "Missing/Not recorded"))
+  )
+
+# Calculate missing count and percentage
+total_records <- nrow(linelist_data)
+missing_count <- sum(is.na(linelist_data$GESTATIONAL_AGE_WEEKS))
+missing_percent <- round(missing_count / total_records * 100, 1)
+
+# Create histogram of gestational age (excluding missing)
+hist_plot <- gestational_age_analysis %>%
+  filter(GESTATIONAL_CATEGORY != "Missing/Not recorded") %>%
+  ggplot(aes(x = GESTATIONAL_AGE_WEEKS)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.8, color = "white") +
+  geom_vline(aes(xintercept = median(GESTATIONAL_AGE_WEEKS, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Gestational Age",
+       subtitle = paste("Median:", round(median(gestational_age_analysis$GESTATIONAL_AGE_WEEKS, na.rm = TRUE), 1)),
+       #                 "weeks | Missing: ", missing_count, " (", missing_percent, "%)"),
+       x = "Gestational Age (weeks)",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Create bar chart by category INCLUDING MISSING - using Set2 palette
+category_plot <- gestational_age_analysis %>%
+  count(GESTATIONAL_CATEGORY, name = "COUNT") %>%
+  mutate(
+    PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+    LABEL = paste0(COUNT, " (", PERCENTAGE, "%)")
+  ) %>%
+  ggplot(aes(x = GESTATIONAL_CATEGORY, y = COUNT, fill = GESTATIONAL_CATEGORY)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  labs(title = "WHO Gestational Age Categories",
+       # subtitle = paste("Total records:", total_records),
+       x = "WHO Gestational Age Category (weeks)",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  scale_fill_brewer(palette = "Set2") +  # Using the Set2 palette as in your original code
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Arrange plots side by side
+library(patchwork)
+combined_plots <- hist_plot + category_plot +
+  plot_annotation(title = "Gestational Age Analysis of NICU Admissions",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_plots)
+
+```
+
+```{r epi_curve_gestational_age, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create 100% stacked column chart by EPI WEEK for WHO gestational age categories
+epi_curve_gestational_week <- linelist_data %>%
+  # Create WHO gestational age categories
+  mutate(GESTATIONAL_CATEGORY = case_when(
+    GESTATIONAL_AGE_WEEKS < 28 ~ "<28 (Extremely Preterm)",
+    GESTATIONAL_AGE_WEEKS >= 28 & GESTATIONAL_AGE_WEEKS < 32 ~ "28-31 (Very Preterm)",
+    GESTATIONAL_AGE_WEEKS >= 32 & GESTATIONAL_AGE_WEEKS < 37 ~ "32-36 (Moderate-Late Preterm)",
+    GESTATIONAL_AGE_WEEKS >= 37 ~ "≥37 (Term)",
+    is.na(GESTATIONAL_AGE_WEEKS) ~ "Unknown/Missing"
+  )) %>%
+  # Ensure categories are ordered correctly
+  mutate(GESTATIONAL_CATEGORY = factor(GESTATIONAL_CATEGORY, 
+                                      levels = c("<28 (Extremely Preterm)",
+                                                 "28-31 (Very Preterm)",
+                                                 "32-36 (Moderate-Late Preterm)",
+                                                 "≥37 (Term)",
+                                                 "Unknown/Missing"))) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and gestational category
+  count(WEEK_START, WEEK_LABEL, GESTATIONAL_CATEGORY, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           GESTATIONAL_CATEGORY,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 5, paste0(PERCENT, "%"), "")  # Only show labels for ≥5%
+  ) %>%
+  ungroup()
+
+# Create color palette using Set2 colors for WHO gestational age categories
+gestational_colors <- RColorBrewer::brewer.pal(5, "Set2")
+names(gestational_colors) <- levels(epi_curve_gestational_week$GESTATIONAL_CATEGORY)
+
+# Calculate weekly totals for annotation
+weekly_totals <- epi_curve_gestational_week %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create the 100% stacked column chart by week
+ggplot(epi_curve_gestational_week, 
+       aes(x = WEEK_START, y = PERCENT, fill = GESTATIONAL_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 5%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # # Add weekly total labels on top
+  # geom_text(data = weekly_totals,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = gestational_colors, name = "WHO Gestational Age Category") +
+  labs(title = "Weekly NICU Admissions by WHO Gestational Age Categories",
+       # subtitle = "100% stacked by epidemiological week (Sunday to Saturday)",
+       x = "Epidemiological Week",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_date(
+    breaks = unique(epi_curve_gestational_week$WEEK_START),
+    labels = unique(epi_curve_gestational_week$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))  # Make room for total labels
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+```
+
+```{r weight_grams, echo=FALSE, fig.height=6, fig.width=10, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create weight analysis INCLUDING MISSING
+weight_analysis <- linelist_data %>%
+  # Create weight categories INCLUDING missing
+  mutate(
+    WEIGHT_CATEGORY = case_when(
+      WEIGHT_GRAMS < 1000 ~ "<1000g (Extremely Low BW)",
+      WEIGHT_GRAMS >= 1000 & WEIGHT_GRAMS < 1500 ~ "1000-1499g (Very Low BW)",
+      WEIGHT_GRAMS >= 1500 & WEIGHT_GRAMS < 2500 ~ "1500-2499g (Low BW)",
+      WEIGHT_GRAMS >= 2500 ~ "≥2500g (Normal BW)",
+      is.na(WEIGHT_GRAMS) ~ "Missing/Not recorded"
+    ),
+    # Ensure categories are ordered correctly
+    WEIGHT_CATEGORY = factor(WEIGHT_CATEGORY, 
+                            levels = c("<1000g (Extremely Low BW)",
+                                       "1000-1499g (Very Low BW)",
+                                       "1500-2499g (Low BW)",
+                                       "≥2500g (Normal BW)",
+                                       "Missing/Not recorded"))
+  )
+
+# Calculate missing count and percentage
+total_records <- nrow(linelist_data)
+missing_count <- sum(is.na(linelist_data$WEIGHT_GRAMS))
+missing_percent <- round(missing_count / total_records * 100, 1)
+
+# Create histogram of birth weight (excluding missing)
+hist_plot <- weight_analysis %>%
+  filter(WEIGHT_CATEGORY != "Missing/Not recorded", 
+         WEIGHT_GRAMS >= 200, WEIGHT_GRAMS <= 6000) %>%
+  ggplot(aes(x = WEIGHT_GRAMS)) +
+  geom_histogram(binwidth = 100, fill = "steelblue", alpha = 0.8, color = "white") +
+  geom_vline(aes(xintercept = median(WEIGHT_GRAMS, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Birth Weight",
+       subtitle = paste("Median:", round(median(weight_analysis$WEIGHT_GRAMS, na.rm = TRUE), 0),
+                       "grams "),
+       x = "Birth Weight (grams)",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Create bar chart by weight category INCLUDING MISSING
+category_plot <- weight_analysis %>%
+  # Filter out implausible weights but keep missing
+  filter(WEIGHT_GRAMS >= 200 & WEIGHT_GRAMS <= 6000 | is.na(WEIGHT_GRAMS)) %>%
+  count(WEIGHT_CATEGORY, name = "COUNT") %>%
+  mutate(
+    PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+    LABEL = paste0(COUNT, " (", PERCENTAGE, "%)")
+  ) %>%
+  ggplot(aes(x = WEIGHT_CATEGORY, y = COUNT, fill = WEIGHT_CATEGORY)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "WHO Birth Weight Categories",
+       # subtitle = paste("Total records:", total_records),
+       x = "WHO Birth Weight Category",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Arrange plots
+library(patchwork)
+combined_plots <- hist_plot + category_plot +
+  plot_annotation(title = "Birth Weight Analysis of NICU Admissions",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_plots)
+
+```
+
+```{r epi_curve_birth_weight, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create 100% stacked column chart by EPI WEEK for WHO birth weight categories
+epi_curve_weight_week <- linelist_data %>%
+  # Create WHO birth weight categories
+  mutate(WEIGHT_CATEGORY = case_when(
+    WEIGHT_GRAMS < 1000 ~ "<1000g (Extremely Low BW)",
+    WEIGHT_GRAMS >= 1000 & WEIGHT_GRAMS < 1500 ~ "1000-1499g (Very Low BW)",
+    WEIGHT_GRAMS >= 1500 & WEIGHT_GRAMS < 2500 ~ "1500-2499g (Low BW)",
+    WEIGHT_GRAMS >= 2500 ~ "≥2500g (Normal BW)",
+    is.na(WEIGHT_GRAMS) ~ "Unknown/Missing"
+  )) %>%
+  # Filter out implausible weights if any
+  filter(is.na(WEIGHT_GRAMS) | (WEIGHT_GRAMS >= 200 & WEIGHT_GRAMS <= 6000)) %>%
+  # Ensure categories are ordered correctly
+  mutate(WEIGHT_CATEGORY = factor(WEIGHT_CATEGORY,
+                                 levels = c("<1000g (Extremely Low BW)",
+                                            "1000-1499g (Very Low BW)",
+                                            "1500-2499g (Low BW)",
+                                            "≥2500g (Normal BW)",
+                                            "Unknown/Missing"))) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and weight category
+  count(WEEK_START, WEEK_LABEL, WEIGHT_CATEGORY, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START),
+                           max(WEEK_START),
+                           by = "week"),
+           WEIGHT_CATEGORY,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL),
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 5, paste0(PERCENT, "%"), "")  # Only show labels for ≥5%
+  ) %>%
+  ungroup()
+
+# Calculate total missing count for annotation
+total_missing <- linelist_data %>%
+  filter(is.na(WEIGHT_GRAMS)) %>%
+  nrow()
+total_records <- nrow(linelist_data)
+missing_percent <- round(total_missing / total_records * 100, 1)
+
+# Create color palette using Set2 colors for WHO birth weight categories
+weight_colors <- RColorBrewer::brewer.pal(5, "Set2")
+names(weight_colors) <- levels(epi_curve_weight_week$WEIGHT_CATEGORY)
+
+# Calculate weekly totals for annotation
+weekly_totals <- epi_curve_weight_week %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create the 100% stacked column chart by week
+ggplot(epi_curve_weight_week,
+       aes(x = WEEK_START, y = PERCENT, fill = WEIGHT_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 5%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = weight_colors, name = "WHO Birth Weight Category") +
+  labs(title = "Weekly NICU Admissions by WHO Birth Weight Categories",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+       #                 "| Missing data: ", total_missing, " of ", total_records,
+       #                 " records (", missing_percent, "%)"),
+       x = "Epidemiological Week",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_date(
+    breaks = unique(epi_curve_weight_week$WEEK_START),
+    labels = unique(epi_curve_weight_week$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))  # Make room for total labels
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+```
+
+
+```{r admission_reason, echo=FALSE, fig.height=8, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+# Create admission reason analysis
+admission_reason_analysis <- linelist_data %>%
+  # Clean and standardize admission reason values
+  mutate(ADMISSION_REASON_CLEAN = case_when(
+    str_detect(toupper(ADMISSION_REASON), "LOW|WEIGHT") ~ "Low weight at birth",
+    str_detect(toupper(ADMISSION_REASON), "PREMATURITY") ~ "Prematurity",
+    str_detect(toupper(ADMISSION_REASON), "HYPOXIA") ~ "Hypoxia",
+    str_detect(toupper(ADMISSION_REASON), "SEPSIS") ~ "Sepsis",
+    is.na(ADMISSION_REASON) ~ "Unknown/Missing",
+    TRUE ~ "Other"
+  )) %>%
+  # Count by admission reason
+  count(ADMISSION_REASON_CLEAN, name = "COUNT") %>%
+  # Calculate percentages and order by count
+  mutate(PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+         LABEL = paste0(COUNT, " (", PERCENTAGE, "%)"),
+         ADMISSION_REASON_CLEAN = fct_reorder(ADMISSION_REASON_CLEAN, COUNT))
+
+# Get the color values from the first plot to ensure matching
+color_palette <- RColorBrewer::brewer.pal(nrow(admission_reason_analysis), "Set3")
+names(color_palette) <- levels(admission_reason_analysis$ADMISSION_REASON_CLEAN)
+
+# Create the column graph
+p1 <- ggplot(admission_reason_analysis, aes(x = fct_reorder(ADMISSION_REASON_CLEAN, -COUNT), y = COUNT, fill = ADMISSION_REASON_CLEAN)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_manual(values = color_palette) +
+  labs(title = "Admission Reason Distribution",
+       x = "Admission Reason",
+       y = "Number of Admissions",
+       fill = "Admission Reason") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none",
+        panel.grid.major.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Create 100% stacked column chart by EPI WEEK for admission reason
+admission_epi_curve_week <- linelist_data %>%
+  # Clean admission reason
+  mutate(ADMISSION_REASON_CLEAN = case_when(
+    str_detect(toupper(ADMISSION_REASON), "LOW|WEIGHT") ~ "Low weight at birth",
+    str_detect(toupper(ADMISSION_REASON), "PREMATURITY") ~ "Prematurity",
+    str_detect(toupper(ADMISSION_REASON), "HIPOX") ~ "Hypoxia",
+    str_detect(toupper(ADMISSION_REASON), "SEPS") ~ "Sepsis",
+    is.na(ADMISSION_REASON) ~ "Unknown/Missing",
+    TRUE ~ "Other"
+  )) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and admission reason
+  count(WEEK_START, WEEK_LABEL, ADMISSION_REASON_CLEAN, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           ADMISSION_REASON_CLEAN,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 10, paste0(PERCENT, "%"), "")  # Only show labels for ≥10%
+  ) %>%
+  ungroup()
+
+# Calculate total missing count for annotation
+total_missing <- linelist_data %>%
+  filter(is.na(ADMISSION_REASON)) %>%
+  nrow()
+total_records <- nrow(linelist_data)
+missing_percent <- round(total_missing / total_records * 100, 1)
+
+# Calculate weekly totals for annotation
+weekly_totals <- admission_epi_curve_week %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create 100% stacked column chart by week
+p2 <- ggplot(admission_epi_curve_week, 
+       aes(x = WEEK_START, y = PERCENT, fill = ADMISSION_REASON_CLEAN)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 10%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = color_palette, name = "Admission Reason") +
+  labs(title = "Weekly NICU Admissions by Admission Reason",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+       #                 "| Missing data: ", total_missing, " of ", total_records, 
+       #                 " records (", missing_percent, "%)"),
+       x = "Epidemiological Week",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        plot.subtitle = element_text(size = 10, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        legend.position = "bottom") +
+  scale_x_date(
+    breaks = unique(admission_epi_curve_week$WEEK_START),
+    labels = unique(admission_epi_curve_week$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+# Arrange plots vertically
+library(patchwork)
+combined_plots <- p1 / p2 +
+  plot_annotation(title = "NICU Admission Reason Analysis",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_plots)
+
+```
+
+```{r outcome, echo=FALSE, fig.height=8, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+# Create outcome analysis
+outcome_analysis <- linelist_data %>%
+  # Clean and standardize outcome values
+  mutate(OUTCOME_CLEAN = case_when(
+    str_detect(toupper(OUTCOME), "CURED") ~ "Cured/Discharged",
+    str_detect(toupper(OUTCOME), "REFER|TRANSFER") ~ "Referred out",
+    str_detect(toupper(OUTCOME), "DEATH|DIED") ~ "Death",
+    str_detect(toupper(OUTCOME), "DEFAULTER/DISCHARGED AGAINST MEDICAL ADVICE") ~ "Defaulter",
+    is.na(OUTCOME) ~ "Unknown/Missing",
+    TRUE ~ "Other"
+  )) %>%
+  # Count by outcome
+  count(OUTCOME_CLEAN, name = "COUNT") %>%
+  # Calculate percentages and order by count
+  mutate(PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+         LABEL = paste0(COUNT, " (", PERCENTAGE, "%)"),
+         OUTCOME_CLEAN = fct_reorder(OUTCOME_CLEAN, COUNT))
+
+# Get the color values from Set3 palette to ensure matching
+color_palette <- RColorBrewer::brewer.pal(nrow(outcome_analysis), "Set3")
+names(color_palette) <- levels(outcome_analysis$OUTCOME_CLEAN)
+
+# Create the column graph
+p1 <- ggplot(outcome_analysis, aes(x = fct_reorder(OUTCOME_CLEAN, -COUNT), y = COUNT, fill = OUTCOME_CLEAN)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_manual(values = color_palette) +
+  labs(title = "Outcome Distribution",
+       x = "Outcome",
+       y = "Number of Cases",
+       fill = "Outcome") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        plot.subtitle = element_text(size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none",
+        panel.grid.major.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Create 100% stacked column chart by EPI WEEK for outcome
+outcome_epi_curve_week <- linelist_data %>%
+  # Clean outcome
+  mutate(OUTCOME_CLEAN = case_when(
+    str_detect(toupper(OUTCOME), "CURED") ~ "Cured/Discharged",
+    str_detect(toupper(OUTCOME), "REFER|TRANSFER") ~ "Referred out",
+    str_detect(toupper(OUTCOME), "DEATH|DIED") ~ "Death",
+    str_detect(toupper(OUTCOME), "DEFAULTER/DISCHARGED AGAINST MEDICAL ADVICE") ~ "Defaulter",
+    is.na(OUTCOME) ~ "Unknown/Missing",
+    TRUE ~ "Other"
+  )) %>%
+  # Ensure DATE_OF_EXIT is in date format
+  mutate(DATE_OF_EXIT = as.Date(DATE_OF_EXIT)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_EXIT)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_EXIT, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count outcomes by epidemiological week and outcome
+  count(WEEK_START, WEEK_LABEL, OUTCOME_CLEAN, name = "WEEKLY_OUTCOMES") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           OUTCOME_CLEAN,
+           fill = list(WEEKLY_OUTCOMES = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_OUTCOMES),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_OUTCOMES / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 10, paste0(PERCENT, "%"), "")  # Only show labels for ≥10%
+  ) %>%
+  ungroup()
+
+# Calculate total missing count for annotation
+total_missing <- linelist_data %>%
+  filter(is.na(OUTCOME)) %>%
+  nrow()
+total_records <- nrow(linelist_data)
+missing_percent <- round(total_missing / total_records * 100, 1)
+
+# Calculate weekly totals for annotation
+weekly_totals <- outcome_epi_curve_week %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create 100% stacked column chart by week
+p2 <- ggplot(outcome_epi_curve_week, 
+       aes(x = WEEK_START, y = PERCENT, fill = OUTCOME_CLEAN)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 10%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = color_palette, name = "Outcome") +
+  labs(title = "Weekly NICU Outcomes",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+       #                 "| Missing data: ", total_missing, " of ", total_records, 
+       #                 " records (", missing_percent, "%)"),
+       x = "Epidemiological Week (Date of Exit)",
+       y = "Percentage of Outcomes") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        plot.subtitle = element_text(size = 10, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+        legend.position = "bottom") +
+  scale_x_date(
+    breaks = unique(outcome_epi_curve_week$WEEK_START),
+    labels = unique(outcome_epi_curve_week$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+# Arrange plots vertically
+library(patchwork)
+combined_plots <- p1 / p2 +
+  plot_annotation(title = "NICU Outcome Analysis",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_plots)
+```
+
+
+```{r length_of_stay, echo=FALSE, fig.height=5, fig.width=10, warning=FALSE, message=FALSE}
+
+# Create length of stay analysis
+length_of_stay_analysis <- linelist_data %>%
+  # Clean and convert length of stay - handle non-breaking space and convert to numeric
+  mutate(LENGTH_OF_STAY_CLEAN = as.numeric(gsub("[^0-9]", "", LENGTH_OF_STAY)),
+         LENGTH_OF_STAY_CLEAN = ifelse(LENGTH_OF_STAY_CLEAN < 0, NA, LENGTH_OF_STAY_CLEAN)) %>%
+  # Remove missing values
+  filter(!is.na(LENGTH_OF_STAY_CLEAN)) %>%
+  # Create length of stay categories
+  mutate(LOS_CATEGORY = case_when(
+    LENGTH_OF_STAY_CLEAN == 0 ~ "0 days",
+    LENGTH_OF_STAY_CLEAN >= 1 & LENGTH_OF_STAY_CLEAN <= 7 ~ "1-7 days",
+    LENGTH_OF_STAY_CLEAN >= 8 & LENGTH_OF_STAY_CLEAN <= 14 ~ "8-14 days",
+    LENGTH_OF_STAY_CLEAN >= 15 & LENGTH_OF_STAY_CLEAN <= 30 ~ "15-30 days",
+    LENGTH_OF_STAY_CLEAN > 30 ~ ">30 days"
+  )) %>%
+  # Ensure categories are ordered correctly
+  mutate(LOS_CATEGORY = factor(LOS_CATEGORY, 
+                              levels = c("0 days", "1-7 days", "8-14 days", "15-30 days", ">30 days")))
+
+# Count by LOS category
+los_category_analysis <- length_of_stay_analysis %>%
+  count(LOS_CATEGORY, name = "COUNT") %>%
+  mutate(PERCENTAGE = round(COUNT / sum(COUNT) * 100, 1),
+         LABEL = paste0(COUNT, " (", PERCENTAGE, "%)"))
+
+# Get color palette
+color_palette <- RColorBrewer::brewer.pal(nrow(los_category_analysis), "Set2")
+names(color_palette) <- levels(los_category_analysis$LOS_CATEGORY)
+
+# Create histogram of length of stay
+p1 <- ggplot(length_of_stay_analysis, aes(x = LENGTH_OF_STAY_CLEAN)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", alpha = 0.8, color = "white") +
+  geom_vline(aes(xintercept = median(LENGTH_OF_STAY_CLEAN, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Length of Stay",
+       # subtitle = paste("Median:", round(median(length_of_stay_analysis$LENGTH_OF_STAY_CLEAN, na.rm = TRUE), 1)),
+       x = "Length of Stay (days)",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Create bar chart by LOS category
+p2 <- ggplot(los_category_analysis, aes(x = LOS_CATEGORY, y = COUNT, fill = LOS_CATEGORY)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_manual(values = color_palette) +
+  labs(title = "Length of Stay Categories",
+       x = "Length of Stay Category",
+       y = "Number of Admissions") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none")
+
+# Arrange plots
+library(patchwork)
+combined_plots <- p1 + p2 +
+  plot_annotation(title = "NICU Length of Stay Analysis",
+                  theme = theme(plot.title = element_text(face = "bold", size = 18, hjust = 0.5)))
+
+print(combined_plots)
+
+```
+
+```{r epi_curve_length_of_stay, echo=FALSE, fig.height=5, fig.width=7.5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Create 100% stacked column chart by EPI WEEK for length of stay categories
+epi_curve_los_week <- linelist_data %>%
+  # Clean and convert length of stay - handle non-breaking space and convert to numeric
+  mutate(LENGTH_OF_STAY_CLEAN = as.numeric(gsub("[^0-9]", "", LENGTH_OF_STAY)),
+         LENGTH_OF_STAY_CLEAN = ifelse(LENGTH_OF_STAY_CLEAN < 0, NA, LENGTH_OF_STAY_CLEAN)) %>%
+  # Create length of stay categories
+  mutate(LOS_CATEGORY = case_when(
+    LENGTH_OF_STAY_CLEAN == 0 ~ "0 days",
+    LENGTH_OF_STAY_CLEAN >= 1 & LENGTH_OF_STAY_CLEAN <= 7 ~ "1-7 days",
+    LENGTH_OF_STAY_CLEAN >= 8 & LENGTH_OF_STAY_CLEAN <= 14 ~ "8-14 days",
+    LENGTH_OF_STAY_CLEAN >= 15 & LENGTH_OF_STAY_CLEAN <= 30 ~ "15-30 days",
+    LENGTH_OF_STAY_CLEAN > 30 ~ ">30 days",
+    is.na(LENGTH_OF_STAY_CLEAN) ~ "Unknown/Missing"
+  )) %>%
+  filter(LOS_CATEGORY != "Unknown/Missing") %>% 
+  # Ensure categories are ordered correctly
+  mutate(LOS_CATEGORY = factor(LOS_CATEGORY, 
+                              levels = c("0 days", "1-7 days", "8-14 days", "15-30 days", ">30 days", "Unknown/Missing"))) %>%
+  # Ensure DATE_OF_EXIT is in date format
+  mutate(DATE_OF_EXIT = as.Date(DATE_OF_EXIT)) %>%
+  # Remove any NA exit dates
+  filter(!is.na(DATE_OF_EXIT)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_EXIT, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count exits by epidemiological week and length of stay category
+  count(WEEK_START, WEEK_LABEL, LOS_CATEGORY, name = "WEEKLY_EXITS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           LOS_CATEGORY,
+           fill = list(WEEKLY_EXITS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_EXITS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_EXITS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 10, paste0(PERCENT, "%"), "")  # Only show labels for ≥10%
+  ) %>%
+  ungroup()
+
+# Calculate total missing count for annotation
+total_missing_los <- linelist_data %>%
+  mutate(LENGTH_OF_STAY_CLEAN = as.numeric(gsub("[^0-9]", "", LENGTH_OF_STAY))) %>%
+  filter(is.na(LENGTH_OF_STAY_CLEAN) | LENGTH_OF_STAY_CLEAN < 0) %>%
+  nrow()
+total_records <- nrow(linelist_data)
+missing_percent_los <- round(total_missing_los / total_records * 100, 1)
+
+# Create color palette using Set2 colors for length of stay categories
+los_colors <- RColorBrewer::brewer.pal(6, "Set2")
+names(los_colors) <- levels(epi_curve_los_week$LOS_CATEGORY)
+
+# Calculate weekly totals for annotation
+weekly_totals_los <- epi_curve_los_week %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create the 100% stacked column chart by week
+ggplot(epi_curve_los_week, 
+       aes(x = WEEK_START, y = PERCENT, fill = LOS_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 10%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals_los,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = los_colors, name = "Length of Stay Category") +
+  labs(title = "Weekly NICU Discharges by Length of Stay Categories",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+                       # "| Missing LOS data: ", total_missing_los, " of ", total_records, 
+                       # " records (", missing_percent_los, "%)"),
+       x = "Epidemiological Week (Date of Exit)",
+       y = "Percentage of Discharges") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_date(
+    breaks = unique(epi_curve_los_week$WEEK_START),
+    labels = unique(epi_curve_los_week$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))  # Make room for total labels
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+```
+
+```{r mother_age_analysis, echo=FALSE, fig.height=6, fig.width=10, warning=FALSE, message=FALSE, fig.align='center'}
+# Mother Age Analysis
+mother_age_analysis <- linelist_data %>%
+  # Clean and convert mother age to numeric
+  mutate(
+    MOTHER_AGE_CLEAN = as.numeric(MOTHER_AGE),
+    # Handle any conversion issues or negative values
+    MOTHER_AGE_CLEAN = ifelse(MOTHER_AGE_CLEAN < 10 | MOTHER_AGE_CLEAN > 60, NA, MOTHER_AGE_CLEAN)
+  )
+
+# Calculate summary statistics
+age_summary <- mother_age_analysis %>%
+  summarise(
+    Total_Records = n(),
+    Missing_Age = sum(is.na(MOTHER_AGE_CLEAN)),
+    Percent_Missing = round(Missing_Age / Total_Records * 100, 1),
+    Mean_Age = round(mean(MOTHER_AGE_CLEAN, na.rm = TRUE), 1),
+    Median_Age = round(median(MOTHER_AGE_CLEAN, na.rm = TRUE), 1),
+    Min_Age = min(MOTHER_AGE_CLEAN, na.rm = TRUE),
+    Max_Age = max(MOTHER_AGE_CLEAN, na.rm = TRUE),
+    SD_Age = round(sd(MOTHER_AGE_CLEAN, na.rm = TRUE), 1),
+    Q1 = quantile(MOTHER_AGE_CLEAN, 0.25, na.rm = TRUE),
+    Q3 = quantile(MOTHER_AGE_CLEAN, 0.75, na.rm = TRUE)
+  )
+
+# Create age categories for analysis
+mother_age_categories <- mother_age_analysis %>%
+  # filter(!is.na(MOTHER_AGE_CLEAN)) %>%
+  mutate(
+    AGE_CATEGORY = case_when(
+      MOTHER_AGE_CLEAN < 18 ~ "<18 years (Adolescent)",
+      MOTHER_AGE_CLEAN >= 18 & MOTHER_AGE_CLEAN < 25 ~ "18-24 years",
+      MOTHER_AGE_CLEAN >= 25 & MOTHER_AGE_CLEAN < 35 ~ "25-34 years",
+      MOTHER_AGE_CLEAN >= 35 ~ "≥35 years (Geriatric)",
+      is.na(MOTHER_AGE_CLEAN) ~ "Unknown/Missing"
+    ),
+    AGE_CATEGORY = factor(AGE_CATEGORY,
+                         levels = c("<18 years (Adolescent)", "18-24 years", 
+                                   "25-34 years", 
+                                   "≥35 years (Geriatric)",
+                           "Unknown/Missing"))
+  )
+
+# Summary table
+# cat("## Mother Age Summary Statistics\n\n")
+summary_table <- data.frame(
+  Metric = c("Total Records", "Missing Age", "% Missing", 
+             "Mean Age", "Median Age", "Minimum Age", "Maximum Age",
+             "Standard Deviation", "25th Percentile (Q1)", "75th Percentile (Q3)"),
+  Value = c(age_summary$Total_Records, age_summary$Missing_Age, 
+            paste0(age_summary$Percent_Missing, "%"),
+            age_summary$Mean_Age, age_summary$Median_Age,
+            age_summary$Min_Age, age_summary$Max_Age,
+            age_summary$SD_Age, age_summary$Q1, age_summary$Q3)
+)
+
+# print(knitr::kable(summary_table, align = c("l", "r")))
+
+# Distribution by age category
+age_category_summary <- mother_age_categories %>%
+  count(AGE_CATEGORY, name = "COUNT") %>%
+  mutate(
+    PERCENT = round(COUNT / sum(COUNT) * 100, 1),
+    LABEL = paste0(COUNT, " (", PERCENT, "%)")
+  )
+
+# cat("\n\n## Mother Age Distribution by Category\n\n")
+# print(knitr::kable(age_category_summary %>% select(AGE_CATEGORY, COUNT, PERCENT), 
+#                    align = c("l", "r", "r")))
+
+# Create visualizations
+library(patchwork)
+
+# Histogram of mother age
+hist_plot <- ggplot(mother_age_categories, aes(x = MOTHER_AGE_CLEAN)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.8, color = "white") +
+  geom_vline(aes(xintercept = median(MOTHER_AGE_CLEAN, na.rm = TRUE)), 
+             color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Mother Age",
+       subtitle = paste("Median age:", age_summary$Median_Age, "years"),
+       x = "Mother Age (years)",
+       y = "Number of Cases") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Bar chart by age category
+category_plot <- age_category_summary %>%
+  ggplot(aes(x = AGE_CATEGORY, y = COUNT, fill = AGE_CATEGORY)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Mother Age Categories",
+       x = "Age Category",
+       y = "Number of Mothers") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+# Box plot for distribution
+box_plot <- ggplot(mother_age_categories, aes(y = MOTHER_AGE_CLEAN)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.8, color = "darkblue") +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "red") +
+  labs(title = "Mother Age Distribution",
+       subtitle = "Box plot with mean (red diamond) and median (line)",
+       y = "Age (years)") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank())
+
+# Combine plots
+combined_age_plots <- (hist_plot + category_plot)  +
+  plot_annotation(title = "Mother Age Analysis of NICU Admissions",
+                  subtitle = paste("Data completeness: ", 
+                                  round((age_summary$Total_Records - age_summary$Missing_Age) / 
+                                        age_summary$Total_Records * 100, 1), "%",
+                                  " (", age_summary$Total_Records - age_summary$Missing_Age, 
+                                  " of ", age_summary$Total_Records, " records)"),
+                  theme = theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+                                plot.subtitle = element_text(size = 12, hjust = 0.5)))
+
+print(combined_age_plots)
+
+```
+```{r mother_age_100_stacked_week, echo=FALSE, fig.height=5, fig.width=8, warning=FALSE, message=FALSE, fig.align='center'}
+# Create 100% stacked column chart by EPI WEEK for mother age categories
+mother_age_week_100 <- linelist_data %>%
+  # Clean mother age and create categories
+  mutate(
+    MOTHER_AGE_CLEAN = as.numeric(MOTHER_AGE),
+    MOTHER_AGE_CLEAN = ifelse(MOTHER_AGE_CLEAN < 10 | MOTHER_AGE_CLEAN > 60, NA, MOTHER_AGE_CLEAN),
+    # Create age categories (including missing)
+    AGE_CATEGORY = case_when(
+      MOTHER_AGE_CLEAN < 18 ~ "<18 years (Adolescent)",
+      MOTHER_AGE_CLEAN >= 18 & MOTHER_AGE_CLEAN < 25 ~ "18-24 years",
+      MOTHER_AGE_CLEAN >= 25 & MOTHER_AGE_CLEAN < 35 ~ "25-34 years",
+      MOTHER_AGE_CLEAN >= 35 ~ "≥35 years (Geriatric)",
+      is.na(MOTHER_AGE_CLEAN) ~ "Unknown/Missing"
+    ),
+    AGE_CATEGORY = factor(AGE_CATEGORY,
+                         levels = c("<18 years (Adolescent)", "18-24 years", 
+                                   "25-34 years", "≥35 years (Geriatric)",
+                                   "Unknown/Missing"))
+  ) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and age category
+  count(WEEK_START, WEEK_LABEL, AGE_CATEGORY, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           AGE_CATEGORY,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 10, paste0(PERCENT, "%"), "")  # Only show labels for ≥10%
+  ) %>%
+  ungroup()
+
+# Calculate weekly totals for annotation
+weekly_totals_age <- mother_age_week_100 %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create color palette (5 categories including missing)
+age_colors <- RColorBrewer::brewer.pal(5, "Set2")
+names(age_colors) <- levels(mother_age_week_100$AGE_CATEGORY)
+
+# Create the 100% stacked column chart by week
+ggplot(mother_age_week_100, 
+       aes(x = WEEK_START, y = PERCENT, fill = AGE_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 10%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals_age,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = age_colors, name = "Mother Age Category") +
+  labs(title = "Weekly NICU Admissions by Mother Age Category",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+       #                 "| Data completeness: ", 
+       #                 round((age_summary$Total_Records - age_summary$Missing_Age) / 
+       #                       age_summary$Total_Records * 100, 1), "%"),
+       x = "Epidemiological Week (Date of Admission)",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  ) +
+  scale_x_date(
+    breaks = unique(mother_age_week_100$WEEK_START),
+    labels = unique(mother_age_week_100$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))  # Make room for total labels
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+```
+
+```{r mother_muac_analysis, echo=FALSE, fig.height=5, fig.width=5, warning=FALSE, message=FALSE, fig.align='center'}
+
+# Simplified Mother MUAC Analysis
+mother_muac_simple <- linelist_data %>%
+  mutate(
+    MOTHER_MUAC_CLEAN = as.numeric(MOTHER_MUAC)
+  )
+
+# Quick summary
+# cat("## Quick Summary: Mother MUAC\n\n")
+# cat("Total records:", nrow(mother_muac_simple), "\n")
+# cat("Records with MUAC data:", sum(!is.na(mother_muac_simple$MOTHER_MUAC_CLEAN)), "\n")
+# cat("Missing MUAC data:", sum(is.na(mother_muac_simple$MOTHER_MUAC_CLEAN)), 
+#     "(", round(sum(is.na(mother_muac_simple$MOTHER_MUAC_CLEAN)) / nrow(mother_muac_simple) * 100, 1), "%)\n")
+# cat("Mean MUAC:", round(mean(mother_muac_simple$MOTHER_MUAC_CLEAN, na.rm = TRUE), 1), "cm\n")
+# cat("Median MUAC:", round(median(mother_muac_simple$MOTHER_MUAC_CLEAN, na.rm = TRUE), 1), "cm\n")
+# cat("MUAC range:", paste(range(mother_muac_simple$MOTHER_MUAC_CLEAN, na.rm = TRUE), collapse = " to "), "cm\n")
+
+# Create categories for simple visualization
+muac_categories_simple <- mother_muac_simple %>%
+  mutate(
+    MUAC_CATEGORY = case_when(
+      MOTHER_MUAC_CLEAN < 210 ~ "<21 cm",
+      MOTHER_MUAC_CLEAN >= 210 & MOTHER_MUAC_CLEAN < 230 ~ "21-22.9 cm",
+      MOTHER_MUAC_CLEAN >= 230 ~ ">23 cm",
+      is.na(MOTHER_MUAC_CLEAN) ~ "Unknown/Missing"
+    ),
+    MUAC_CATEGORY = factor(MUAC_CATEGORY,
+                          levels = c("<21 cm", "21-22.9 cm",
+                                    ">23 cm", 
+                                    "Unknown/Missing"))
+  )
+
+muac_summary_simple <- muac_categories_simple %>%
+  count(MUAC_CATEGORY, name = "COUNT") %>%
+  mutate(
+    PERCENT = round(COUNT / sum(COUNT) * 100, 1),
+    LABEL = paste0(COUNT, " (", PERCENT, "%)")
+  )
+
+# Simple visualization
+category_plot_simple <- muac_summary_simple %>%
+  ggplot(aes(x = MUAC_CATEGORY, y = COUNT, fill = MUAC_CATEGORY)) +
+  geom_col(alpha = 0.8, width = 0.6) +
+  geom_text(aes(label = LABEL), vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Mother MUAC Distribution",
+       x = "MUAC Category (WHO Standards)",
+       y = "Number of Mothers"
+    ) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        plot.caption = element_text(size = 9, color = "gray50", hjust = 0)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+
+print(category_plot_simple)
+
+```
+
+```{r mother_muac_100_stacked_week, echo=FALSE, fig.height=5, fig.width=8, warning=FALSE, message=FALSE, fig.align='center'}
+# Create 100% stacked column chart by EPI WEEK for mother MUAC categories
+mother_muac_week_100 <- linelist_data %>%
+  # Clean mother MUAC and create categories
+  mutate(
+    MOTHER_MUAC_CLEAN = as.numeric(MOTHER_MUAC),
+    # Note: Your original code shows values like 210, 230, 250 which suggests
+    # the data might be stored as mm (millimeters) rather than cm
+    # Adjusting thresholds accordingly
+    MUAC_CATEGORY = case_when(
+      MOTHER_MUAC_CLEAN < 210 ~ "<21 cm",
+      MOTHER_MUAC_CLEAN >= 210 & MOTHER_MUAC_CLEAN < 230 ~ "21-22.9 cm",
+      MOTHER_MUAC_CLEAN >= 230 ~ ">23 cm",
+      is.na(MOTHER_MUAC_CLEAN) ~ "Unknown/Missing"
+    ),
+    MUAC_CATEGORY = factor(MUAC_CATEGORY,
+                          levels = c("<21 cm", "21-22.9 cm",
+                                    ">23 cm", 
+                                    "Unknown/Missing"))
+  ) %>%
+  # Ensure DATE_OF_ADMISSION is in date format
+  mutate(DATE_OF_ADMISSION = as.Date(DATE_OF_ADMISSION)) %>%
+  # Remove any NA dates
+  filter(!is.na(DATE_OF_ADMISSION)) %>%
+  # Calculate epidemiological week (Sunday to Saturday)
+  mutate(
+    WEEK_START = floor_date(DATE_OF_ADMISSION, "week", week_start = 7),
+    WEEK_NUM = as.numeric(format(WEEK_START, "%U")) + 1,
+    WEEK_LABEL = paste0("W", sprintf("%02d", WEEK_NUM))
+  ) %>%
+  # Count admissions by epidemiological week and MUAC category
+  count(WEEK_START, WEEK_LABEL, MUAC_CATEGORY, name = "WEEKLY_ADMISSIONS") %>%
+  # Complete the sequence of weeks to show zeros for missing weeks
+  complete(WEEK_START = seq(min(WEEK_START), 
+                           max(WEEK_START), 
+                           by = "week"),
+           MUAC_CATEGORY,
+           fill = list(WEEKLY_ADMISSIONS = 0)) %>%
+  # Add week labels back for completed data
+  mutate(
+    WEEK_LABEL = ifelse(is.na(WEEK_LABEL), 
+                       paste0("W", sprintf("%02d", as.numeric(format(WEEK_START, "%U")) + 1)),
+                       WEEK_LABEL)
+  ) %>%
+  # Calculate percentages for 100% stacked bars
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  mutate(
+    WEEK_TOTAL = sum(WEEKLY_ADMISSIONS),
+    PERCENT = ifelse(WEEK_TOTAL > 0, round(WEEKLY_ADMISSIONS / WEEK_TOTAL * 100, 1), 0),
+    PERCENT_LABEL = ifelse(PERCENT >= 10, paste0(PERCENT, "%"), "")  # Only show labels for ≥10%
+  ) %>%
+  ungroup()
+
+# Calculate total missing count for annotation
+total_missing_muac <- sum(is.na(linelist_data$MOTHER_MUAC))
+total_records <- nrow(linelist_data)
+missing_percent_muac <- round(total_missing_muac / total_records * 100, 1)
+
+# Calculate weekly totals for annotation
+weekly_totals_muac <- mother_muac_week_100 %>%
+  group_by(WEEK_START, WEEK_LABEL) %>%
+  summarise(WEEK_TOTAL = first(WEEK_TOTAL), .groups = "drop")
+
+# Create color palette (5 categories including missing)
+muac_colors <- RColorBrewer::brewer.pal(5, "Set2")
+names(muac_colors) <- levels(mother_muac_week_100$MUAC_CATEGORY)
+
+# Create the 100% stacked column chart by week
+ggplot(mother_muac_week_100, 
+       aes(x = WEEK_START, y = PERCENT, fill = MUAC_CATEGORY)) +
+  geom_col(position = "fill", width = 6.5, alpha = 0.9) +
+  # Add percentage labels for segments ≥ 10%
+  geom_text(aes(label = PERCENT_LABEL),
+            position = position_fill(vjust = 0.5),
+            size = 3,
+            fontface = "bold",
+            color = "white",
+            check_overlap = TRUE) +
+  # Add weekly total labels on top
+  # geom_text(data = weekly_totals_muac,
+  #           aes(x = WEEK_START, y = 1.02, label = paste("n =", WEEK_TOTAL)),
+  #           vjust = 0,
+  #           size = 3.2,
+  #           fontface = "bold",
+  #           color = "black",
+  #           inherit.aes = FALSE) +
+  scale_fill_manual(values = muac_colors, name = "Mother MUAC Category") +
+  labs(title = "Weekly NICU Admissions by Mother MUAC Category",
+       # subtitle = paste("100% stacked by epidemiological week (Sunday to Saturday)",
+       #                 "| Data completeness: ", 
+       #                 round((total_records - total_missing_muac) / total_records * 100, 1), "%"),
+       x = "Epidemiological Week (Date of Admission)",
+       y = "Percentage of Admissions") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.caption = element_text(size = 9, color = "gray50", hjust = 0)
+  ) +
+  scale_x_date(
+    breaks = unique(mother_muac_week_100$WEEK_START),
+    labels = unique(mother_muac_week_100$WEEK_LABEL)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(),
+    expand = expansion(mult = c(0, 0.12))  # Make room for total labels
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+```
+
+
+```{r muac_analysis, echo=FALSE, fig.height=6, fig.width=12, warning=FALSE, message=FALSE, fig.align='center'}
+# MUAC Analysis: Correlation with prematurity and low birth weight
+
+# First, let's examine the MUAC data quality
+muac_summary <- linelist_data %>%
+  summarise(
+    total_cases = n(),
+    muac_missing = sum(is.na(MOTHER_MUAC)),
+    muac_complete = sum(!is.na(MOTHER_MUAC)),
+    muac_complete_rate = round(muac_complete / total_cases * 100, 1),
+    muac_mean = mean(MOTHER_MUAC, na.rm = TRUE),
+    muac_median = median(MOTHER_MUAC, na.rm = TRUE),
+    muac_sd = sd(MOTHER_MUAC, na.rm = TRUE),
+    muac_min = min(MOTHER_MUAC, na.rm = TRUE),
+    muac_max = max(MOTHER_MUAC, na.rm = TRUE)
+  )
+
+# print(paste("MUAC data completeness:", muac_summary$muac_complete_rate, "%"))
+
+# Define low MUAC (standard cutoff < 23 cm for pregnant women)
+low_muac_cutoff <- 230
+
+# Create analysis dataset
+muac_analysis_data <- linelist_data %>%
+  # Clean and prepare variables
+  mutate(
+    # Create low MUAC indicator
+    LOW_MUAC = ifelse(as.numeric(MOTHER_MUAC) < low_muac_cutoff, "Low MUAC (<23 cm)", "Normal MUAC (≥23 cm)"),
+    LOW_MUAC_BINARY = ifelse(as.numeric(MOTHER_MUAC) < low_muac_cutoff, 1, 0),
+    
+    # Create prematurity indicator (WHO definition: <37 weeks)
+    PRETERM = ifelse(as.numeric(GESTATIONAL_AGE_WEEKS) < 37, "Preterm (<37 weeks)", "Term (≥37 weeks)"),
+    PRETERM_BINARY = ifelse(as.numeric(GESTATIONAL_AGE_WEEKS) < 37, 1, 0),
+    
+    # Create low birth weight indicator (WHO definition: <2500g)
+    LOW_BIRTH_WEIGHT = ifelse(as.numeric(WEIGHT_GRAMS) < 2500, "Low BW (<2500g)", "Normal BW (≥2500g)"),
+    LOW_BIRTH_WEIGHT_BINARY = ifelse(as.numeric(WEIGHT_GRAMS) < 2500, 1, 0)
+  ) %>%
+  # Remove cases with missing critical variables
+  filter(!is.na(MOTHER_MUAC), !is.na(GESTATIONAL_AGE_WEEKS), !is.na(WEIGHT_GRAMS))
+
+# Plot 1: Gestational age by MUAC category
+p1 <- muac_analysis_data %>%
+  ggplot(aes(x = LOW_MUAC, y = GESTATIONAL_AGE_WEEKS, fill = LOW_MUAC)) +
+  # geom_violin(alpha = 0.6) +
+  geom_boxplot(width = 0.2, alpha = 0.8) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  geom_hline(yintercept = 37, linetype = "dashed", color = "red", linewidth = 1) +
+  annotate("text", x = 1.5, y = 37.5, 
+           label = "Preterm cutoff: 37 weeks", 
+           color = "red", size = 3) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Gestational Age by Maternal MUAC Status",
+       # subtitle = "Comparison between low and normal MUAC mothers",
+       x = "Maternal MUAC Category",
+       y = "Gestational Age (weeks)") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Plot 2: Birth weight by MUAC category
+p2 <- muac_analysis_data %>%
+  ggplot(aes(x = LOW_MUAC, y = WEIGHT_GRAMS, fill = LOW_MUAC)) +
+  # geom_violin(alpha = 0.6) +
+  geom_boxplot(width = 0.2, alpha = 0.8) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 1) +
+  geom_hline(yintercept = 2500, linetype = "dashed", color = "red", linewidth = 1) +
+  annotate("text", x = 1.5, y = 2600, 
+           label = "Low BW cutoff: 2500g", 
+           color = "red", size = 3) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "Birth Weight by Maternal MUAC Status",
+       # subtitle = "Comparison between low and normal MUAC mothers",
+       x = "Maternal MUAC Category",
+       y = "Birth Weight (grams)") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5))
+
+# Combine plots
+library(patchwork)
+combined_plots <- p1 + p2 +
+  plot_annotation(title = "Neonatal Outcomes by Maternal MUAC Status",
+                  # subtitle = "MUAC as independent variable, neonatal outcomes as dependent variables",
+                  theme = theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+                                plot.subtitle = element_text(size = 12, hjust = 0.5)))
+
+print(combined_plots)
+```
+
+
+```{r muac_logistic_regression, echo=FALSE, warning=FALSE, message=FALSE, fig.height=5, fig.width=10, include = FALSE}
+# # Logistic Regression Analysis: MUAC as predictor of adverse neonatal outcomes
+# 
+# # Prepare data for logistic regression
+# logit_data <- linelist_data %>%
+#   mutate(
+#     # Create binary outcomes
+#     PRETERM_BINARY = ifelse(GESTATIONAL_AGE_WEEKS < 37, 1, 0),
+#     LOW_BW_BINARY = ifelse(WEIGHT_GRAMS < 2500, 1, 0),
+#     VERY_LOW_BW_BINARY = ifelse(WEIGHT_GRAMS < 1500, 1, 0),
+#     
+#     # Create MUAC categories
+#     LOW_MUAC_BINARY = ifelse(MOTHER_MUAC < 23, 1, 0),
+#     MUAC_CATEGORY = case_when(
+#       MOTHER_MUAC < 21 ~ "Severely Low (<21 cm)",
+#       MOTHER_MUAC >= 21 & MOTHER_MUAC < 23 ~ "Moderately Low (21-22.9 cm)",
+#       MOTHER_MUAC >= 23 ~ "Normal (≥23 cm)"
+#     )
+#   ) %>%
+#   # Remove missing values
+#   filter(!is.na(MOTHER_MUAC), !is.na(GESTATIONAL_AGE_WEEKS), !is.na(WEIGHT_GRAMS))
+# 
+# # Model 1: Preterm birth ~ MUAC (continuous)
+# model_preterm_continuous <- glm(PRETERM_BINARY ~ MOTHER_MUAC, 
+#                                data = logit_data, 
+#                                family = binomial)
+# 
+# # Model 2: Preterm birth ~ MUAC (categorical)
+# model_preterm_categorical <- glm(PRETERM_BINARY ~ MUAC_CATEGORY, 
+#                                 data = logit_data, 
+#                                 family = binomial)
+# 
+# # Model 3: Low birth weight ~ MUAC (continuous)
+# model_low_bw_continuous <- glm(LOW_BW_BINARY ~ MOTHER_MUAC, 
+#                               data = logit_data, 
+#                               family = binomial)
+# 
+# # Model 4: Low birth weight ~ MUAC (categorical)  
+# model_low_bw_categorical <- glm(LOW_BW_BINARY ~ MUAC_CATEGORY, 
+#                                data = logit_data, 
+#                                family = binomial)
+# 
+# # Create summary table for continuous models
+# continuous_summary <- data.frame(
+#   Model = c("Preterm Birth", "Low Birth Weight"),
+#   Odds_Ratio = c(exp(coef(model_preterm_continuous)[2]), 
+#                  exp(coef(model_low_bw_continuous)[2])),
+#   CI_Lower = c(exp(confint(model_preterm_continuous)[2,1]),
+#                exp(confint(model_low_bw_continuous)[2,1])),
+#   CI_Upper = c(exp(confint(model_preterm_continuous)[2,2]),
+#                exp(confint(model_low_bw_continuous)[2,2])),
+#   P_Value = c(summary(model_preterm_continuous)$coefficients[2,4],
+#               summary(model_low_bw_continuous)$coefficients[2,4])
+# )
+# 
+# # Format continuous results
+# continuous_summary <- continuous_summary %>%
+#   mutate(
+#     across(2:4, ~round(., 2)),
+#     P_Value = round(P_Value, 4),
+#     OR_95_CI = paste0(Odds_Ratio, " (", CI_Lower, "-", CI_Upper, ")"),
+#     Interpretation = ifelse(Odds_Ratio < 1, 
+#                            "Decreased risk per 1cm MUAC increase", 
+#                            "Increased risk per 1cm MUAC increase")
+#   )
+# 
+# # Create summary for categorical models (using normal MUAC as reference)
+# muac_cat_effects <- data.frame(
+#   Exposure = c("Moderately Low MUAC", "Severely Low MUAC"),
+#   Preterm_OR = c(exp(coef(model_preterm_categorical)[2]), 
+#                  exp(coef(model_preterm_categorical)[3])),
+#   Preterm_CI_Lower = c(exp(confint(model_preterm_categorical)[2,1]),
+#                        exp(confint(model_preterm_categorical)[3,1])),
+#   Preterm_CI_Upper = c(exp(confint(model_preterm_categorical)[2,2]),
+#                        exp(confint(model_preterm_categorical)[3,2])),
+#   Preterm_P = c(summary(model_preterm_categorical)$coefficients[2,4],
+#                 summary(model_preterm_categorical)$coefficients[3,4]),
+#   LowBW_OR = c(exp(coef(model_low_bw_categorical)[2]), 
+#                exp(coef(model_low_bw_categorical)[3])),
+#   LowBW_CI_Lower = c(exp(confint(model_low_bw_categorical)[2,1]),
+#                      exp(confint(model_low_bw_categorical)[3,1])),
+#   LowBW_CI_Upper = c(exp(confint(model_low_bw_categorical)[2,2]),
+#                      exp(confint(model_low_bw_categorical)[3,2])),
+#   LowBW_P = c(summary(model_low_bw_categorical)$coefficients[2,4],
+#               summary(model_low_bw_categorical)$coefficients[3,4])
+# )
+# 
+# # Format categorical results
+# categorical_summary <- muac_cat_effects %>%
+#   mutate(
+#     across(2:9, ~round(., 2)),
+#     Preterm_OR_CI = paste0(Preterm_OR, " (", Preterm_CI_Lower, "-", Preterm_CI_Upper, ")"),
+#     LowBW_OR_CI = paste0(LowBW_OR, " (", LowBW_CI_Lower, "-", LowBW_CI_Upper, ")"),
+#     Preterm_Sig = ifelse(Preterm_P < 0.05, "Yes", "No"),
+#     LowBW_Sig = ifelse(LowBW_P < 0.05, "Yes", "No")
+#   )
+# 
+# # Print results
+# cat("## Logistic Regression Analysis: MUAC and Neonatal Outcomes\n\n")
+# 
+# cat("### Continuous MUAC Analysis (per 1 cm increase)\n")
+# knitr::kable(continuous_summary[, c("Model", "OR_95_CI", "P_Value", "Interpretation")], 
+#              caption = "Effect of MUAC (continuous) on Adverse Neonatal Outcomes") %>%
+#   kableExtra::kable_styling(bootstrap_options = c("striped", "hover")) %>%
+#   print()
+# 
+# cat("\n### Categorical MUAC Analysis (vs Normal MUAC ≥23 cm)\n")
+# knitr::kable(categorical_summary[, c("Exposure", "Preterm_OR_CI", "Preterm_Sig", "LowBW_OR_CI", "LowBW_Sig")], 
+#              caption = "Effect of MUAC Categories on Adverse Neonatal Outcomes",
+#              col.names = c("MUAC Category", "Preterm OR (95% CI)", "Significant", "Low BW OR (95% CI)", "Significant")) %>%
+#   kableExtra::kable_styling(bootstrap_options = c("striped", "hover")) %>%
+#   print()
+# 
+# # Create visualization of odds ratios
+# or_plot_data <- data.frame(
+#   Category = rep(c("Moderately Low MUAC", "Severely Low MUAC"), 2),
+#   Outcome = rep(c("Preterm Birth", "Low Birth Weight"), each = 2),
+#   OR = c(muac_cat_effects$Preterm_OR, muac_cat_effects$LowBW_OR),
+#   CI_Lower = c(muac_cat_effects$Preterm_CI_Lower, muac_cat_effects$LowBW_CI_Lower),
+#   CI_Upper = c(muac_cat_effects$Preterm_CI_Upper, muac_cat_effects$LowBW_CI_Upper)
+# )
+# 
+# # Forest plot of odds ratios
+# forest_plot <- ggplot(or_plot_data, aes(x = OR, y = Category, color = Outcome)) +
+#   geom_point(position = position_dodge(width = 0.5), size = 3) +
+#   geom_errorbarh(aes(xmin = CI_Lower, xmax = CI_Upper), 
+#                  height = 0.2, position = position_dodge(width = 0.5)) +
+#   geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+#   scale_x_continuous(trans = "log10", breaks = c(0.5, 1, 2, 4, 8)) +
+#   scale_color_brewer(palette = "Set1") +
+#   labs(title = "Odds Ratios for Adverse Neonatal Outcomes by MUAC Category",
+#        subtitle = "Reference: Normal MUAC (≥23 cm). Dashed line at OR=1 (no effect)",
+#        x = "Odds Ratio (log scale)",
+#        y = "MUAC Category") +
+#   theme_minimal() +
+#   theme(plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+#         legend.position = "bottom")
+# 
+# print(forest_plot)
+# 
+# # Model performance metrics
+# cat("\n### Model Performance Summary\n")
+# performance_summary <- data.frame(
+#   Model = c("Preterm (Continuous)", "Preterm (Categorical)", 
+#             "Low BW (Continuous)", "Low BW (Categorical)"),
+#   AIC = c(AIC(model_preterm_continuous), AIC(model_preterm_categorical),
+#           AIC(model_low_bw_continuous), AIC(model_low_bw_categorical)),
+#   Null_Deviance = c(model_preterm_continuous$null.deviance, model_preterm_categorical$null.deviance,
+#                    model_low_bw_continuous$null.deviance, model_low_bw_categorical$null.deviance),
+#   Residual_Deviance = c(model_preterm_continuous$deviance, model_preterm_categorical$deviance,
+#                        model_low_bw_continuous$deviance, model_low_bw_categorical$deviance)
+# )
+# 
+# knitr::kable(performance_summary, 
+#              caption = "Model Fit Statistics") %>%
+#   kableExtra::kable_styling(bootstrap_options = c("striped", "hover")) %>%
+#   print()
+# 
+# cat("\n### Key Conclusions:\n")
+# cat("• Each 1 cm increase in MUAC is associated with", 
+#     round((1 - continuous_summary$Odds_Ratio[1]) * 100, 1), 
+#     "% reduction in preterm birth odds\n")
+# cat("• Each 1 cm increase in MUAC is associated with", 
+#     round((1 - continuous_summary$Odds_Ratio[2]) * 100, 1), 
+#     "% reduction in low birth weight odds\n")
+# cat("• Severely low MUAC (<21 cm) shows strongest association with adverse outcomes\n")
+# cat("• Results suggest dose-response relationship between MUAC and neonatal outcomes\n")
+```

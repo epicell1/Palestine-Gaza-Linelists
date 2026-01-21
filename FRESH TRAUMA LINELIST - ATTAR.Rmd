@@ -1,0 +1,1549 @@
+---
+title: "Intentional Fresh Tauma Linelist Analysis - Attar"
+author: "MSF OCBA"
+date: "Report generated on `r format(Sys.Date(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+params:
+  output_file: "Fresh_Trauma_Linelist_Analysis_`r format(Sys.Date(), '%Y%m%d')`.html"
+---
+
+```{r setup, include=FALSE}
+
+# Set working directory
+setwd("C:/Users/msfe-jerusalem-epi/OneDrive - MSF/1_Epidemiology/3_Projects/12_Gaza Linelists/INTENTIONAL FRESH TRAUMA LINELIST")
+
+# Install pacman if not already installed
+if (!require("pacman")) install.packages("pacman")
+
+# Use pacman to load multiple libraries (will install any missing ones)
+pacman::p_load(
+  readxl, 
+  tidyverse,
+  janitor,
+  lubridate,
+  here,
+  ggplot2,
+  kableExtra,
+  patchwork,
+  scales
+)
+
+# Read the XLSM file
+file_path <- "20250630_Intentional Fresh Trauma LL.v2.0.xlsm"
+
+# Read first sheet
+data <- read_excel(file_path) 
+
+file_path <- "20250630_Intentional Fresh Trauma LL.v2.0.xlsm"
+
+# Read the "Attar" sheet, skipping first 4 rows
+data <- read_excel(
+  file_path,
+  sheet = "Attar",
+  skip = 5,
+  col_names = FALSE
+) 
+
+# Create analysis-friendly column names
+analysis_colnames <- c(
+  "id",                    # Nº
+  "date",                  # Date
+  "gender",                # Gender
+  "age",                   # Age
+  "age_unit",              # Age Unit
+  "intentionality",
+  "wound_location_text",   # Location of wound (text)
+  "wound_location_1",      # Location of wound 1
+  "wound_location_2",      # Location of wound 2
+  "wound_location_3",      # Location of wound 3
+  "wound_type_1",          # Type of Wound 1
+  "wound_type_2",          # Type of Wound 2
+  "wound_type_3",          # Type of Wound 3
+  "cause",                 # Cause
+  "exit_status",           # Exit
+  "comments"               # Comments
+)
+
+# Assign column names (skip first column)
+colnames(data) <- c(analysis_colnames)
+# data <- data %>% select(-drop_column)
+
+# Clean column names further using janitor package
+data <- data %>%
+  clean_names() %>%  # Makes names lowercase with underscores
+  rename(
+    patient_id = id,
+    wound_loc_text = wound_location_text,
+    wound_loc_1 = wound_location_1,
+    wound_loc_2 = wound_location_2,
+    wound_loc_3 = wound_location_3
+  ) 
+
+# Filter for distribution center only
+# %>% 
+#   filter(cause == "Distribution center")
+
+# Convert data types for better analysis
+data <- data %>%
+  mutate(
+    date = as.Date(date),
+    age = as.numeric(age),
+    gender = factor(gender),
+    age_unit = factor(age_unit),
+    across(c(wound_loc_1:wound_loc_3, wound_type_1:wound_type_3), factor),
+    # cause = factor(cause),
+    exit_status = factor(exit_status)
+  )
+
+# Recode cause
+data <- data %>%
+  mutate(cause = case_when(
+    cause == "AS" ~ "Air Strike",
+    cause == "BBO" ~ "Beaten By Others", 
+    cause == "RTA" ~ "Road Traffic Accident",
+    TRUE ~ as.character(cause)  # Keep all other values as-is
+  ))
+
+# Remove completely empty rows
+data <- data %>%
+  filter(!if_all(everything(), is.na))
+
+# View the cleaned data
+cat("Dataset dimensions:", dim(data), "\n")
+cat("Column names:", names(data), "\n\n")
+str(data)
+head(data)
+
+# Check for missing values
+cat("\nMissing values per column:\n")
+sapply(data, function(x) sum(is.na(x)))
+
+```
+
+``` {r data validation, include=FALSE}
+
+# Basic Data Validation Checks
+
+# 1. Overview of the dataset
+cat("=== DATASET OVERVIEW ===\n")
+cat("Dimensions:", dim(data), "(rows x columns)\n")
+cat("Number of complete cases:", sum(complete.cases(data)), "\n")
+cat("Number of rows with any NA:", sum(!complete.cases(data)), "\n\n")
+
+# 2. Check for missing values
+cat("=== MISSING VALUES ===\n")
+missing_summary <- sapply(data, function(x) sum(is.na(x)))
+print(missing_summary)
+cat("\n")
+
+# 3. Numeric field validation
+cat("=== NUMERIC FIELDS ===\n")
+numeric_fields <- data %>% select(where(is.numeric))
+if(ncol(numeric_fields) > 0) {
+  for(col in names(numeric_fields)) {
+    cat("Column:", col, "\n")
+    cat("  Min:", min(data[[col]], na.rm = TRUE), "\n")
+    cat("  Max:", max(data[[col]], na.rm = TRUE), "\n")
+    cat("  Mean:", mean(data[[col]], na.rm = TRUE), "\n")
+    cat("  NA count:", sum(is.na(data[[col]])), "\n")
+    cat("  Unique values:", length(unique(data[[col]])), "\n")
+    cat("  Zero values:", sum(data[[col]] == 0, na.rm = TRUE), "\n")
+    cat("  Negative values:", sum(data[[col]] < 0, na.rm = TRUE), "\n\n")
+  }
+} else {
+  cat("No numeric fields found\n\n")
+}
+
+# 4. Categorical field validation
+cat("=== CATEGORICAL FIELDS ===\n")
+categorical_fields <- data %>% select(where(is.factor) | where(is.character))
+if(ncol(categorical_fields) > 0) {
+  for(col in names(categorical_fields)) {
+    cat("Column:", col, "\n")
+    cat("  Unique values:", length(unique(data[[col]])), "\n")
+    cat("  NA count:", sum(is.na(data[[col]])), "\n")
+    cat("  Blank values:", sum(data[[col]] == "" | data[[col]] == " ", na.rm = TRUE), "\n")
+    
+    # Show top 15 most common values
+    top_values <- head(sort(table(data[[col]]), decreasing = TRUE), 15)
+    cat("  Top 15 values:\n")
+    print(top_values)
+    cat("\n")
+  }
+} else {
+  cat("No categorical fields found\n\n")
+}
+
+# 5. Date field validation (if exists)
+cat("=== DATE FIELD ===\n")
+if("date" %in% names(data)) {
+  cat("Column: date\n")
+  cat("  Earliest date:", min(data$date, na.rm = TRUE), "\n")
+  cat("  Latest date:", max(data$date, na.rm = TRUE), "\n")
+  cat("  NA count:", sum(is.na(data$date)), "\n")
+  cat("  Unique dates:", length(unique(data$date)), "\n\n")
+} else {
+  cat("No date field found\n\n")
+}
+
+# 6. Quick sanity checks
+cat("=== SANITY CHECKS ===\n")
+cat("Duplicate case IDs:", any(duplicated(data$case_id)), "\n")
+cat("Age values > 120:", sum(data$age > 120, na.rm = TRUE), "\n")
+cat("Age values < 0:", sum(data$age < 0, na.rm = TRUE), "\n")
+
+# 7. Quick summary of each column
+cat("\n=== QUICK COLUMN SUMMARIES ===\n")
+for(col in names(data)) {
+  cat(col, ":", class(data[[col]]), "-", 
+      ifelse(is.numeric(data[[col]]), paste("Range:", min(data[[col]], na.rm = TRUE), "to", max(data[[col]], na.rm = TRUE)),
+             paste("Unique values:", length(unique(data[[col]])))), "\n")
+}
+
+```
+
+``` {r data cleaning, include=FALSE}
+
+# Clean wound_type_1 - fix inconsistent capitalization
+data <- data %>%
+  mutate(wound_type_1 = case_when(
+    wound_type_1 == "Cold Steel Weapon" ~ "Cold steel weapon",
+    TRUE ~ as.character(wound_type_1)
+  ) %>% factor())
+
+# Clean cause column (high missingness)
+data <- data %>%
+  mutate(
+    cause = ifelse(is.na(cause), "Not specified", as.character(cause))
+  )
+
+# Handle wound_loc_text (low missingness)
+data <- data %>%
+  mutate(wound_loc_text = ifelse(is.na(wound_loc_text), 
+                                "Not specified", 
+                                wound_loc_text))
+
+# Standardize text fields to lowercase for consistency
+data <- data %>%
+  mutate(
+    wound_loc_text = tolower(wound_loc_text),
+    comments = tolower(comments)
+  )
+
+# Create age groups for better analysis
+data <- data %>%
+  mutate(
+    age_group = case_when(
+      age < 5 ~ "Pediatric (<5)",
+      age >= 5 & age < 18 ~ "Pediatric (5-17)",
+      age >= 18 & age < 40 ~ "Adult (18-39)",
+      age >= 40 & age < 60 ~ "Middle-aged (40-59)",
+      age >= 60 ~ "Elderly (60+)",
+      TRUE ~ "Unknown"
+    ) %>% factor()
+  )
+
+```
+
+```{r epi_curve_complete, fig.width=8.5, fig.height=4, echo = FALSE, warning=FALSE, message=FALSE}
+
+# Create epi week variable
+data <- data %>%
+  mutate(
+    epi_week = floor_date(date + days(7), unit = "week", week_start = 7),
+    epi_week_label = format(epi_week, "%Y-W%U")
+  ) 
+
+# Count admissions by epi week
+epi_curve_data <- data %>%
+  group_by(epi_week, epi_week_label) %>%
+  summarise(admissions = n(), .groups = 'drop') %>%
+  arrange(epi_week)
+
+# Calculate median for labeling
+median_admissions <- median(epi_curve_data$admissions)
+
+# Create enhanced plot
+epi_curve_enhanced <- ggplot(epi_curve_data, aes(x = epi_week_label, y = admissions, group = 1)) +
+  geom_col(fill = "steelblue", alpha = 0.8, width = 0.7) +
+  geom_hline(yintercept = median_admissions, 
+             linetype = "dashed", color = "red", linewidth = 1) +
+  geom_text(aes(label = admissions), vjust = -0.5, size = 3) +
+  annotate("text", x = Inf, y = median_admissions + 0.5, 
+           label = paste("Median:", median_admissions), 
+           color = "red", hjust = 1.1, vjust = -0.5, size = 3.5) +
+  labs(
+    title = "Admissions by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    legend.position = "none"
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+
+print(epi_curve_enhanced)
+
+```
+
+```{r age_sex_pyramid, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Define the correct age group order
+age_group_levels <- c("Pediatric (<5)", "Pediatric (5-17)", "Adult (18-39)", "Middle-aged (40-59)", "Elderly (60+)", "Unknown")
+
+# Create age-sex data for pyramid with proper ordering
+age_sex_data <- data %>%
+  filter(tolower(gender) != "unknown") %>% 
+  filter(!is.na(age_group), !is.na(gender)) %>%
+  # Convert age_group to factor with correct order
+  mutate(age_group = factor(age_group, levels = age_group_levels)) %>%
+  count(age_group, gender) %>%
+  group_by(gender) %>%
+  mutate(
+    percent = n / sum(n) * 100,
+    # For pyramid plot, make male counts negative
+    n_pyramid = ifelse(toupper(gender) == "MALE", -n, n),
+    percent_pyramid = ifelse(toupper(gender) == "MALE", -percent, percent)
+  ) %>%
+  ungroup()
+
+# Create color palette
+gender_colors <- c("Female" = "#F8766D", "Male" = "#00BFC4")
+
+# Create age-sex pyramid plot with properly ordered age groups
+age_pyramid <- ggplot(age_sex_data, aes(x = age_group, fill = gender)) +
+  # Male bars (negative side)
+  geom_bar(data = subset(age_sex_data, toupper(gender) == "MALE"), 
+           aes(y = n_pyramid), stat = "identity", alpha = 0.8) +
+  # Female bars (positive side)
+  geom_bar(data = subset(age_sex_data, toupper(gender) == "FEMALE"), 
+           aes(y = n_pyramid), stat = "identity", alpha = 0.8) +
+  # Add count labels
+  geom_text(data = subset(age_sex_data, toupper(gender) == "MALE"),
+            aes(y = n_pyramid, label = n), 
+            hjust = 1.1, size = 3.5, color = "white", fontface = "bold") +
+  geom_text(data = subset(age_sex_data, toupper(gender) == "FEMALE"),
+            aes(y = n_pyramid, label = n), 
+            hjust = -0.1, size = 3.5, color = "white", fontface = "bold") +
+  # Coordinate flip for pyramid
+  coord_flip() +
+  # Scales and labels
+  scale_y_continuous(
+    breaks = pretty(age_sex_data$n_pyramid),
+    labels = function(x) abs(x),
+    expand = expansion(mult = c(0.1, 0.1))
+  ) +
+  scale_x_discrete(limits = rev(age_group_levels)) + # Reverse for proper pyramid order
+  scale_fill_manual(values = gender_colors, name = "Gender") +
+  labs(
+    title = "Age-Sex Pyramid of Trauma Admissions",
+    x = "Age Group",
+    y = "Number of Admissions"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  # Add vertical line at zero
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.5)
+
+# Display the pyramid
+print(age_pyramid)
+
+```
+
+```{r age_group_heatmap, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Define the correct age group order (reversed for top-to-bottom display)
+age_group_levels <- rev(c("Pediatric (<5)", "Pediatric (5-17)", "Adult (18-39)", "Middle-aged (40-59)", "Elderly (60+)", "Unknown"))
+
+# Recode NAs and set factor levels
+data <- data %>%
+  mutate(age_group = factor(age_group, levels = age_group_levels))
+
+# Prepare data for heatmap
+heatmap_data_age <- data %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, age_group) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage_in_week = count / sum(count) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    week_order = as.numeric(factor(epi_week_label, 
+                                  levels = unique(epi_week_label[order(epi_week_label)])))
+  )
+
+# Create heatmap
+heatmap_plot_age <- ggplot(heatmap_data_age, 
+                           aes(x = reorder(epi_week_label, week_order), 
+                               y = age_group,  # no fct_rev needed
+                               fill = percentage_in_week)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 3.5) +
+  scale_fill_gradientn(
+    colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),  # green gradient
+    name = "Percentage\nwithin week",
+    labels = scales::percent_format(scale = 1)
+  ) +
+  labs(
+    title = "Age Groups by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Age Group",
+    fill = "% of Week's\nCases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.title.position = "panel",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_plot_age)
+
+```
+
+
+```{r age_stacked_column, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Define the correct age group order
+age_group_levels <- c("Pediatric (<5)", "Pediatric (5-17)", "Adult (18-39)", "Middle-aged (40-59)", "Elderly (60+)", "Unknown")
+
+# Prepare data for 100% stacked bar chart with proper ordering
+stacked_data <- data %>%
+  filter(!is.na(age_group), !is.na(epi_week_label)) %>%
+  # Convert age_group to factor with correct order
+  mutate(age_group = factor(age_group, levels = age_group_levels)) %>%
+  group_by(epi_week_label, age_group) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    week_order = as.numeric(factor(epi_week_label, levels = unique(epi_week_label[order(epi_week_label)])))
+  ) %>%
+  ungroup()
+
+# Define color palette for age groups (in logical order)
+age_group_colors <- c(
+  "Pediatric (<5)" = "gray", 
+  "Pediatric (5-17)" = "#66C2A5",      # Green
+  "Adult (18-39)" = "#FC8D62",       # Orange
+  "Middle-aged (40-59)" = "#8DA0CB", # Blue
+  "Elderly (60+)" = "#E78AC3",       # Pink
+  "Unknown" = "#A6D854"              # Light green
+)
+
+# Create 100% stacked bar chart with proper ordering
+stacked_chart <- ggplot(stacked_data, aes(x = reorder(epi_week_label, week_order), y = percentage, fill = age_group)) +
+  geom_col(position = "fill", width = 0.8) +
+  scale_y_continuous(labels = scales::percent_format(), expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = age_group_colors, name = "Age Group", breaks = age_group_levels) +
+  labs(
+    title = "Age Groups by Epidemiological Week",
+    # subtitle = "Percentage composition of admissions by age group for each week",
+    x = "Epidemiological Week",
+    y = "Percentage of Admissions",
+    fill = "Age Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    # plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  # Add percentage labels (for groups larger than 5%)
+  geom_text(
+    aes(label = ifelse(percentage > 5, paste0(round(percentage, 0), "%"), "")),
+    position = position_fill(vjust = 0.5),
+    size = 3,
+    color = "white",
+    fontface = "bold"
+  )
+
+# Display the chart
+print(stacked_chart)
+
+# # Add summary statistics
+# cat("## Summary Statistics\n\n")
+# cat("Total weeks:", n_distinct(stacked_data$epi_week_label), "\n")
+# cat("Total admissions:", sum(stacked_data$count), "\n\n")
+# 
+# # Show overall age group distribution (in logical order)
+# overall_age_dist <- stacked_data %>%
+#   group_by(age_group) %>%
+#   summarise(total_count = sum(count), .groups = 'drop') %>%
+#   mutate(percentage = total_count / sum(total_count) * 100) %>%
+#   arrange(factor(age_group, levels = age_group_levels))
+# 
+# cat("### Overall Age Group Distribution:\n")
+# print(knitr::kable(overall_age_dist, col.names = c("Age Group", "Count", "Percentage")))
+
+```
+
+```{r wound_location, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# 1. TRANSFORM TO LONG FORMAT
+wound_long <- data %>%
+  select(patient_id, wound_loc_1, wound_loc_2, wound_loc_3) %>%
+  pivot_longer(
+    cols = c(wound_loc_1, wound_loc_2, wound_loc_3),
+    names_to = "wound_number",
+    values_to = "wound_location",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    wound_number = factor(wound_number, 
+                         levels = c("wound_loc_1", "wound_loc_2", "wound_loc_3"),
+                         labels = c("Location 1", "Location 2", "Location 3"))
+  )
+
+# 2. OVERALL WOUND LOCATION FREQUENCY
+overall_freq <- wound_long %>%
+  count(wound_location) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1)) %>%
+  arrange(desc(n))
+
+# 3. WOUND LOCATION BY POSITION (1st, 2nd, 3rd)
+position_freq <- wound_long %>%
+  group_by(wound_number, wound_location) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(wound_number) %>%
+  mutate(percentage = round(count / sum(count) * 100, 1)) %>%
+  arrange(wound_number, desc(count))
+
+# Plot 1: Overall wound location distribution (top 15)
+p1 <- overall_freq %>%
+  # head(15) %>%
+  ggplot(aes(x = reorder(wound_location, n), y = n)) +
+  geom_col(fill = "#3498db") +
+  geom_text(aes(label = paste0(n, " (", percentage, "%)")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  expand_limits(y = max(overall_freq$n) * 1.2) +  # add 20% space
+  labs(title = "Distribution of Wound Locations",
+       x = "Wound Location", 
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", 
+                              size = 14, 
+                              hjust = 0.5)  # centers the title
+  )
+
+print(p1)
+
+```
+
+```{r wound_location_heatmap, fig.width=8.5, fig.height=5, echo=FALSE, warning=FALSE, message=FALSE}
+
+# TRANSFORM TO LONG FORMAT (including epi_week_label)
+wound_long_epi <- data %>%
+  select(patient_id, epi_week_label, wound_loc_1, wound_loc_2, wound_loc_3) %>%
+  pivot_longer(
+    cols = c(wound_loc_1, wound_loc_2, wound_loc_3),
+    names_to = "wound_number",
+    values_to = "wound_location",
+    values_drop_na = TRUE
+  ) %>%
+  filter(!is.na(epi_week_label)) %>%
+  mutate(
+    wound_number = factor(wound_number, 
+                         levels = c("wound_loc_1", "wound_loc_2", "wound_loc_3"),
+                         labels = c("Location 1", "Location 2", "Location 3"))
+  )
+
+# Prepare data for heatmap - ignore wound_number, focus only on locations and weeks
+heatmap_data <- wound_long_epi %>%
+  group_by(epi_week_label, wound_location) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage_in_week = count / sum(count) * 100
+  ) %>%
+  ungroup() %>%
+  # Get top locations for better visualization
+  group_by(wound_location) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  # Keep only top locations (e.g., top 15)
+  filter(wound_location %in% head(unique(wound_location[order(-total_count)]), 15)) %>%
+  # Create week order for proper sorting
+  mutate(
+    week_order = as.numeric(factor(epi_week_label, 
+                                  levels = unique(epi_week_label[order(epi_week_label)])))
+  )
+
+# Create the heatmap
+heatmap_plot <- ggplot(heatmap_data, 
+                      aes(x = reorder(epi_week_label, week_order),    # now on X
+                          y = reorder(wound_location, total_count),  # now on Y
+                          fill = percentage_in_week)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 3.5) +
+  scale_fill_gradientn(
+    colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),
+    # trans = "log",   # uncomment if you want log scale
+    name = "Percentage\nwithin week",
+    labels = scales::percent_format(scale = 1)
+  ) +
+  labs(
+    title = "Wound Locations by Epidemiological Week",
+    x = "Epidemiological Week",   # swapped
+    y = "Wound Location",         # swapped
+    fill = "% of Week's\nWounds"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.title.position = "panel",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_plot)
+
+```
+
+```{r wound_loc_stacked_column, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# 1. Recode wound_location into wound_loc_group and order the factor
+wound_long_epi <- wound_long_epi %>%
+  mutate(wound_loc_group = case_when(
+    wound_location %in% c("Head (unspecified)", "Head - front", "Head - back", "Neck") ~ "Head & neck",
+    wound_location %in% c("Abdomen", "Chest", "Back", "Pelvis") ~ "Torso",
+    wound_location %in% c("Shoulder", "Upper limb (unspecified)", "Hand") ~ "Upper limbs",
+    wound_location %in% c("Lower limb (unspecified)", "Foot", "Knee") ~ "Lower limbs",
+    TRUE ~ "Not specified"  # includes NAs
+  )) %>%
+  mutate(wound_loc_group = factor(wound_loc_group, 
+                                  levels = c("Head & neck", "Torso", "Upper limbs", "Lower limbs", "Not specified")))
+
+# 2. Prepare data for 100% stacked column chart
+wound_loc_stacked_data <- wound_long_epi %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, wound_loc_group) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    week_order = as.numeric(factor(epi_week_label, levels = unique(epi_week_label[order(epi_week_label)])))
+  ) %>%
+  ungroup()
+
+# 3. Define colors for wound location groups
+wound_loc_colors <- c(
+  "Head & neck" = "#66C2A5",
+  "Torso" = "#FC8D62",
+  "Upper limbs" = "#8DA0CB",
+  "Lower limbs" = "#E78AC3",
+  "Not specified" = "#A6D854"
+)
+
+# 4. Create 100% stacked column chart with ordered colors
+wound_loc_stacked_chart <- ggplot(wound_loc_stacked_data, 
+                                  aes(x = reorder(epi_week_label, week_order), 
+                                      y = percentage, 
+                                      fill = wound_loc_group)) +
+  geom_col(position = "fill", width = 0.8) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = wound_loc_colors, name = "Wound Location Group") +
+  labs(
+    title = "Wound Location Groups by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Percentage of Wounds",
+    fill = "Wound Location"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  # Add percentage labels (for groups larger than 5%)
+  geom_text(
+    aes(label = ifelse(percentage > 5, paste0(round(percentage, 0), "%"), "")),
+    position = position_fill(vjust = 0.5),
+    size = 3,
+    color = "white",
+    fontface = "bold"
+  )
+
+# 5. Display the chart
+print(wound_loc_stacked_chart)
+
+```
+
+```{r wound_type, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# 1. TRANSFORM TO LONG FORMAT
+wound_type_long <- data %>%
+  select(patient_id, wound_type_1, wound_type_2, wound_type_3) %>%
+  pivot_longer(
+    cols = c(wound_type_1, wound_type_2, wound_type_3),
+    names_to = "wound_number",
+    values_to = "wound_type",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    wound_number = factor(wound_number, 
+                         levels = c("wound_type_1", "wound_type_2", "wound_type_3"),
+                         labels = c("Type 1", "Type 2", "Type 3"))
+  )
+
+# 2. OVERALL WOUND TYPE FREQUENCY
+overall_freq_type <- wound_type_long %>%
+  count(wound_type) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1)) %>%
+  arrange(desc(n))
+
+# 3. WOUND TYPE BY POSITION (1st, 2nd, 3rd)
+position_freq_type <- wound_type_long %>%
+  group_by(wound_number, wound_type) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(wound_number) %>%
+  mutate(percentage = round(count / sum(count) * 100, 1)) %>%
+  arrange(wound_number, desc(count))
+
+# Plot 1: Overall wound type distribution
+p1_type <- overall_freq_type %>%
+  ggplot(aes(x = reorder(wound_type, n), y = n)) +
+  geom_col(fill = "#e74c3c") +
+  geom_text(aes(label = paste0(n, " (", percentage, "%)")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  expand_limits(y = max(overall_freq_type$n) * 1.2) +  # add 20% space
+  labs(title = "Distribution of Wound Types",
+       x = "Wound Type", 
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", 
+                              size = 14, 
+                              hjust = 0.5)  # centers the title
+  )
+
+print(p1_type)
+
+```
+
+```{r wound_type_heatmap, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# TRANSFORM TO LONG FORMAT (including epi_week_label)
+wound_type_long_epi <- data %>%
+  select(patient_id, epi_week_label, wound_type_1, wound_type_2, wound_type_3) %>%
+  pivot_longer(
+    cols = c(wound_type_1, wound_type_2, wound_type_3),
+    names_to = "wound_number",
+    values_to = "wound_type",
+    values_drop_na = TRUE
+  ) %>%
+  filter(!is.na(epi_week_label)) %>%
+  mutate(
+    wound_number = factor(wound_number, 
+                         levels = c("wound_type_1", "wound_type_2", "wound_type_3"),
+                         labels = c("Type 1", "Type 2", "Type 3"))
+  )
+
+# Prepare data for heatmap - ignore wound_number, focus only on types and weeks
+heatmap_data_type <- wound_type_long_epi %>%
+  group_by(epi_week_label, wound_type) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage_in_week = count / sum(count) * 100
+  ) %>%
+  ungroup() %>%
+  # Get top types for better visualization
+  group_by(wound_type) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  # Keep only top types (e.g., top 15)
+  filter(wound_type %in% head(unique(wound_type[order(-total_count)]), 15)) %>%
+  # Create week order for proper sorting
+  mutate(
+    week_order = as.numeric(factor(epi_week_label, 
+                                  levels = unique(epi_week_label[order(epi_week_label)])))
+  )
+
+# create the heatmap 
+heatmap_plot_type <- ggplot(heatmap_data_type, 
+                      aes(x = reorder(epi_week_label, week_order),   # now on X
+                          y = reorder(wound_type, total_count),     # now on Y
+                          fill = percentage_in_week)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 3.5) +
+  scale_fill_gradientn(
+    colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),
+    name = "Percentage\nwithin week",
+    labels = scales::percent_format(scale = 1)
+  ) +
+  labs(
+    title = "Wound Types by Epidemiological Week",
+    x = "Epidemiological Week",   # swapped
+    y = "Wound Type",             # swapped
+    fill = "% of Week's\nWounds"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.title.position = "panel",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_plot_type)
+
+```
+
+```{r wound_type_stacked_column, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Prepare data for 100% stacked bar chart for wound types
+wound_type_stacked_data <- wound_type_long_epi %>%
+  filter(!is.na(wound_type), !is.na(epi_week_label)) %>%
+  group_by(epi_week_label, wound_type) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    week_order = as.numeric(factor(epi_week_label, levels = unique(epi_week_label[order(epi_week_label)])))
+  ) %>%
+  ungroup()
+
+# Define color palette for wound types
+wound_type_colors <- c(
+  "#66C2A5","#FC8D62","#8DA0CB","#E78AC3","#A6D854"
+)[1:length(unique(wound_type_stacked_data$wound_type))]
+
+names(wound_type_colors) <- unique(wound_type_stacked_data$wound_type)
+
+# Define desired order (bottom to top in the stack)
+wound_type_levels <- c("Physical assault", 
+                       "Cold steel weapon", 
+                       "Blast", 
+                       "Gunshot", 
+                       "Burn")
+
+# Apply factor ordering
+wound_type_stacked_data$wound_type <- factor(
+  wound_type_stacked_data$wound_type, 
+  levels = wound_type_levels
+)
+
+# Create 100% stacked bar chart
+wound_type_stacked_chart <- ggplot(wound_type_stacked_data, 
+                                  aes(x = reorder(epi_week_label, week_order), 
+                                      y = percentage, 
+                                      fill = wound_type)) +
+  geom_col(position = "fill", width = 0.8) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = wound_type_colors, 
+                    name = "Wound Type",
+                    breaks = wound_type_levels) +   # enforce legend order
+  labs(
+    title = "Wound Types by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Percentage of Wounds",
+    fill = "Wound Type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  # Add percentage labels (for groups larger than 5%)
+  geom_text(
+    aes(label = ifelse(percentage > 5, paste0(round(percentage, 0), "%"), "")),
+    position = position_fill(vjust = 0.5),
+    size = 3,
+    color = "white",
+    fontface = "bold"
+  ) 
+# +
+#   # Add total counts above bars
+#   geom_text(
+#     data = wound_type_stacked_data %>%
+#       group_by(epi_week_label, week_order) %>%
+#       summarise(total = sum(count), .groups = 'drop'),
+#     aes(x = reorder(epi_week_label, week_order), y = 1.02, label = total),
+#     inherit.aes = FALSE,
+#     size = 3.5,
+#     fontface = "bold"
+#   )
+
+
+# Display the chart
+print(wound_type_stacked_chart)
+
+```
+
+```{r cause, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Recode NA as "Not specified"
+data <- data %>%
+  mutate(cause = ifelse(is.na(cause), "Not specified", cause))
+
+# Overall cause frequency
+overall_freq_cause <- data %>%
+  count(cause) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1)) %>%
+  arrange(desc(n))
+
+# Plot: Distribution of causes
+p1_cause <- overall_freq_cause %>%
+  ggplot(aes(x = reorder(cause, n), y = n)) +
+  geom_col(fill = "#2ecc71") +  # blue fill for contrast
+  geom_text(aes(label = paste0(n, " (", percentage, "%)")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  expand_limits(y = max(overall_freq_cause$n) * 1.2) +  # add 20% space
+  labs(title = "Distribution of Causes",
+       x = "Cause", 
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", 
+                              size = 14, 
+                              hjust = 0.5)  # center title
+  )
+
+print(p1_cause)
+
+```
+
+```{r cause_heatmap, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Recode NA causes as "Not specified"
+data <- data %>%
+  mutate(cause = ifelse(is.na(cause), "Not specified", cause))
+
+# Prepare data for heatmap
+heatmap_data_cause <- data %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, cause) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage_in_week = count / sum(count) * 100
+  ) %>%
+  ungroup() %>%
+  # Optional: keep only top causes for visualization, or just use all
+  group_by(cause) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  # Create week order for proper sorting
+  mutate(
+    week_order = as.numeric(factor(epi_week_label, 
+                                  levels = unique(epi_week_label[order(epi_week_label)]))),
+    # Factor levels for causes to control Y-axis order (top → bottom)
+    cause = factor(cause, levels = c("Not specified", "Distribution center", "Beaten By Others", "Road Traffic Accident", "Air Strike"))
+  )
+
+# Create heatmap
+heatmap_plot_cause <- ggplot(heatmap_data_cause, 
+                             aes(x = reorder(epi_week_label, week_order),   # weeks on X
+                                 y = fct_rev(cause),                             # causes on Y
+                                 fill = percentage_in_week)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 3.5) +
+  scale_fill_gradientn(
+    colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),  # green gradient
+    name = "Percentage\nwithin week",
+    labels = scales::percent_format(scale = 1)
+  ) +
+  labs(
+    title = "Causes by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Cause",
+    fill = "% of Week's\nCases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.title.position = "panel",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_plot_cause)
+
+```
+
+```{r cause_stacked_column, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Prepare data for 100% stacked bar chart for cause
+cause_stacked_data <- data %>%
+  # Recode NA causes as "Not specified" instead of "Unknown"
+  mutate(cause = ifelse(is.na(cause), "Not specified", as.character(cause))) %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, cause) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    week_order = as.numeric(factor(epi_week_label, levels = unique(epi_week_label[order(epi_week_label)])))
+  ) %>%
+  ungroup()
+
+# Define the specific order from top to bottom in the stacked bars
+desired_order <- c("Not specified", "Distribution center", "Beaten By Others", "Road Traffic Accident", "Air Strike")
+
+# Convert cause to factor with the desired order (reverse for stacking order)
+cause_stacked_data <- cause_stacked_data %>%
+  mutate(cause = factor(cause, levels = desired_order))
+
+# Define color palette for causes in the specified order
+cause_colors <- c(
+  "Not specified" = "#66C2A5",        
+  "Distribution center" = "#FC8D62",  
+  "Beaten By Others" = "#8DA0CB",                  
+  "Road Traffic Accident" = "#E78AC3",                  
+  "Air Strike" = "#A6D854"                    
+)
+
+# Create 100% stacked bar chart with specified order
+cause_stacked_chart <- ggplot(cause_stacked_data, 
+                             aes(x = reorder(epi_week_label, week_order), 
+                                 y = percentage, 
+                                 fill = cause)) +
+  geom_col(position = "fill", width = 0.8) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = cause_colors, name = "Cause", 
+                    breaks = desired_order,  # Ensure legend order matches stack order
+                    drop = FALSE) +          # Keep all levels even if not present
+  labs(
+    title = "Causes by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Percentage of Cases",
+    fill = "Cause"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  # Add percentage labels (for groups larger than 5%)
+  geom_text(
+    aes(label = ifelse(percentage > 5, paste0(round(percentage, 0), "%"), "")),
+    position = position_fill(vjust = 0.5),
+    size = 3,
+    color = "white",
+    fontface = "bold"
+  ) 
+# +
+#   # Add total counts above bars
+#   geom_text(
+#     data = cause_stacked_data %>%
+#       group_by(epi_week_label, week_order) %>%
+#       summarise(total = sum(count), .groups = 'drop'),
+#     aes(x = reorder(epi_week_label, week_order), y = 1.02, label = total),
+#     inherit.aes = FALSE,
+#     size = 3.5,
+#     fontface = "bold"
+#   )
+
+# Display the chart
+print(cause_stacked_chart)
+
+```
+
+```{r exit, fig.width=8.5, fig.height=3, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Recode NA as "Not specified"
+data <- data %>%
+  mutate(exit_status = ifelse(is.na(exit_status), "Not specified", as.character(exit_status)))
+
+# Overall exit_status frequency
+overall_freq_exit <- data %>%
+  count(exit_status) %>%
+  mutate(percentage = round(n / sum(n) * 100, 1)) %>%
+  arrange(desc(n))
+
+# Plot: Distribution of exit_status
+p1_exit <- overall_freq_exit %>%
+  ggplot(aes(x = reorder(exit_status, n), y = n)) +
+  geom_col(fill = "#9b59b6") +  # purple fill for contrast
+  geom_text(aes(label = paste0(n, " (", percentage, "%)")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  expand_limits(y = max(overall_freq_exit$n) * 1.2) +  # add 20% space
+  labs(title = "Distribution of Exit Status",
+       x = "Exit Status", 
+       y = "Count") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", 
+                              size = 14, 
+                              hjust = 0.5)  # center title
+  )
+
+print(p1_exit)
+```
+
+```{r exit_heatmap, fig.width=8.5, fig.height=2.5, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Recode NA exit_status as "Not specified"
+data <- data %>%
+  mutate(exit_status = ifelse(is.na(exit_status), "Not specified", as.character(exit_status)))
+
+# Prepare data for heatmap
+heatmap_data_exit <- data %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, exit_status) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage_in_week = count / sum(count) * 100
+  ) %>%
+  ungroup() %>%
+  group_by(exit_status) %>%
+  mutate(total_count = sum(count)) %>%
+  ungroup() %>%
+  # Create week order for proper sorting
+  mutate(
+    week_order = as.numeric(factor(epi_week_label, 
+                                  levels = unique(epi_week_label[order(epi_week_label)]))),
+    # Factor levels for exit_status to control Y-axis order
+    exit_status = factor(exit_status, levels = c("Not specified", "Discharged Against Medical Advice", "Transferred", "Discharged"))
+  )
+
+# Create heatmap
+heatmap_plot_exit <- ggplot(heatmap_data_exit, 
+                           aes(x = reorder(epi_week_label, week_order),   # weeks on X
+                               y = exit_status,                  # exit_status on Y
+                               fill = percentage_in_week)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 3.5) +
+  scale_fill_gradientn(
+    colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),
+    name = "Percentage\nwithin week",
+    labels = scales::percent_format(scale = 1)
+  ) +
+  labs(
+    title = "Exit Status by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Exit Status",
+    fill = "% of Week's\nCases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.title.position = "panel",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    panel.grid = element_blank()
+  )
+
+print(heatmap_plot_exit)
+
+```
+
+```{r exit_stacked_column, fig.width=8.5, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+
+# Prepare data for 100% stacked bar chart for exit_status
+exit_stacked_data <- data %>%
+  # Recode NA exit_status as "Not specified"
+  mutate(exit_status = ifelse(is.na(exit_status), "Not specified", as.character(exit_status))) %>%
+  filter(!is.na(epi_week_label)) %>%
+  group_by(epi_week_label, exit_status) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(epi_week_label) %>%
+  mutate(
+    percentage = count / sum(count) * 100,
+    week_order = as.numeric(factor(epi_week_label, levels = unique(epi_week_label[order(epi_week_label)])))
+  ) %>%
+  ungroup()
+
+# Define the specific order from top to bottom in the stacked bars
+desired_order_exit <- c("Discharged","Transferred","Discharged Against Medical Advice", "Deceased", "Not specified")
+
+# Convert exit_status to factor with the desired order
+exit_stacked_data <- exit_stacked_data %>%
+  mutate(exit_status = factor(exit_status, levels = desired_order_exit))
+
+# Define color palette for exit_status in the specified order
+exit_colors <- c(
+  "Discharged" = "#66C2A5",  
+  "Transferred" = "#FC8D62",    
+  "Discharged Against Medical Advice" = "#8DA0CB",
+  "Deceased" = "#E78AC3",
+  "Not specified" = "#A6D854"
+)
+
+# Create 100% stacked bar chart with specified order
+exit_stacked_chart <- ggplot(exit_stacked_data, 
+                            aes(x = reorder(epi_week_label, week_order), 
+                                y = percentage, 
+                                fill = exit_status)) +
+  geom_col(position = "fill", width = 0.8) +
+  scale_y_continuous(labels = scales::percent_format(), 
+                     expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values = exit_colors, name = "Exit Status", 
+                    breaks = desired_order_exit,
+                    drop = FALSE) +
+  labs(
+    title = "Exit Status by Epidemiological Week",
+    x = "Epidemiological Week",
+    y = "Percentage of Cases",
+    fill = "Exit Status"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_text(size = 12),
+    legend.position = "bottom",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  # Add percentage labels (for groups larger than 5%)
+  geom_text(
+    aes(label = ifelse(percentage > 5, paste0(round(percentage, 0), "%"), "")),
+    position = position_fill(vjust = 0.5),
+    size = 3,
+    color = "white",
+    fontface = "bold"
+  )
+
+# Display the chart
+print(exit_stacked_chart)
+```
+
+```{r age_wound_type_cross_tab, fig.width=6, fig.height=4.5, echo=FALSE, warning=FALSE, message=FALSE}
+# # Cross-tabulation of Age Group and Wound Type
+# 
+# # 1. Prepare data for cross-tab analysis
+# age_wound_data <- data %>%
+#   # Get all wound types (1, 2, 3) in long format
+#   select(patient_id, age_group, wound_type_1, wound_type_2, wound_type_3) %>%
+#   pivot_longer(
+#     cols = c(wound_type_1, wound_type_2, wound_type_3),
+#     names_to = "wound_number",
+#     values_to = "wound_type",
+#     values_drop_na = TRUE
+#   ) %>%
+#   filter(!is.na(age_group), !is.na(wound_type)) %>%
+#   # Remove "wound_number" as we're analyzing all wounds collectively
+#   select(-wound_number)
+# 
+# # Define consistent ordering for age groups and wound types
+# age_group_levels <- c("Pediatric (<5)", "Pediatric (5-17)", "Adult (18-39)", "Middle-aged (40-59)", "Elderly (60+)", "Unknown")
+# wound_type_levels <- c("Physical assault", "Cold steel weapon", "Blast", "Gunshot", "Burn")
+# 
+# # Apply factor ordering
+# age_wound_data <- age_wound_data %>%
+#   mutate(
+#     age_group = factor(age_group, levels = age_group_levels),
+#     wound_type = factor(wound_type, levels = wound_type_levels)
+#   )
+# 
+# # 2. HEATMAP: Count of wounds by age group and wound type
+# heatmap_cross_data <- age_wound_data %>%
+#   group_by(age_group, wound_type) %>%
+#   summarise(count = n(), .groups = 'drop') %>%
+#   group_by(age_group) %>%
+#   mutate(
+#     percentage_in_agegroup = count / sum(count) * 100
+#   ) %>%
+#   ungroup()
+# 
+# # Create heatmap
+# heatmap_cross <- ggplot(heatmap_cross_data, 
+#                        aes(x = age_group,  
+#                            y = fct_rev(wound_type),
+#                            fill = percentage_in_agegroup)) +
+#   geom_tile(color = "white", linewidth = 0.8) +
+#   geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 4) +
+#   scale_fill_gradientn(
+#     colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),
+#     name = "Percentage\nwithin age group",
+#     labels = scales::percent_format(scale = 1)
+#   ) +
+#   labs(
+#     title = "Wound Types by Age Group",
+#     # subtitle = "Cell values show count of wounds, color shows percentage within age group",
+#     x = "Wound Type",
+#     y = "Age Group",
+#     fill = "% of Age Group's\nWounds"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+#     plot.subtitle = element_text(size = 10, hjust = 0.5),
+#     axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+#     axis.text.y = element_text(size = 10),
+#     axis.title = element_text(size = 12),
+#     legend.title = element_text(size = 11),
+#     legend.text = element_text(size = 9),
+#     panel.grid = element_blank()
+#   )
+# 
+# # 3. STACKED COLUMN CHART: 100% stacked by age group
+# stacked_cross_data <- age_wound_data %>%
+#   group_by(age_group, wound_type) %>%
+#   summarise(count = n(), .groups = 'drop') %>%
+#   group_by(age_group) %>%
+#   mutate(
+#     percentage = count / sum(count) * 100
+#   ) %>%
+#   ungroup()
+# 
+# # Define color palette for wound types (consistent with previous charts)
+# wound_type_colors <- c(
+#   "Physical assault" = "#66C2A5",
+#   "Cold steel weapon" = "#FC8D62", 
+#   "Blast" = "#8DA0CB",
+#   "Gunshot" = "#E78AC3",
+#   "Burn" = "#A6D854"
+# )
+# 
+# # Create 100% stacked column chart
+# stacked_cross_chart <- ggplot(stacked_cross_data, 
+#                              aes(x = age_group, 
+#                                  y = percentage, 
+#                                  fill = wound_type)) +
+#   geom_col(position = "fill", width = 0.9) +
+#   geom_text(
+#     aes(label = ifelse(percentage > 8, paste0(round(percentage, 0), "%"), "")),
+#     position = position_fill(vjust = 0.5),
+#     size = 3.2,
+#     color = "white",
+#     fontface = "bold"
+#   ) +
+#   scale_y_continuous(labels = scales::percent_format(), 
+#                      expand = expansion(mult = c(0, 0.05))) +
+#   scale_fill_manual(values = wound_type_colors, name = "Wound Type") +
+#   labs(
+#     title = "Wound Type Distribution by Age Group",
+#     # subtitle = "100% stacked columns showing proportion of wound types within each age group",
+#     x = "Age Group",
+#     y = "Percentage of Wounds"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+#     plot.subtitle = element_text(size = 10, hjust = 0.5),
+#     axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+#     axis.text.y = element_text(size = 10),
+#     axis.title = element_text(size = 12),
+#     legend.position = "bottom",
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank()
+#   )
+# 
+# print(heatmap_cross)
+# print(stacked_cross_chart)
+```
+
+```{r wound_type_location_cross_tab, fig.width=6, fig.height=4.5, echo=FALSE, warning=FALSE, message=FALSE}
+# # Cross-tabulation of Wound Type and Wound Location Groups
+# 
+# # 1. Prepare data for cross-tab analysis
+# wound_type_location_data <- data %>%
+#   # Get all wound types and locations in long format
+#   select(patient_id, wound_type_1, wound_type_2, wound_type_3, 
+#          wound_loc_1, wound_loc_2, wound_loc_3) %>%
+#   pivot_longer(
+#     cols = c(wound_type_1, wound_type_2, wound_type_3),
+#     names_to = "wound_number_type",
+#     values_to = "wound_type",
+#     values_drop_na = TRUE
+#   ) %>%
+#   pivot_longer(
+#     cols = c(wound_loc_1, wound_loc_2, wound_loc_3),
+#     names_to = "wound_number_loc",
+#     values_to = "wound_location",
+#     values_drop_na = TRUE
+#   ) %>%
+#   # Match wound types with locations by patient and wound number
+#   mutate(
+#     wound_number_type = str_extract(wound_number_type, "\\d"),
+#     wound_number_loc = str_extract(wound_number_loc, "\\d")
+#   ) %>%
+#   filter(wound_number_type == wound_number_loc) %>%
+#   filter(!is.na(wound_type), !is.na(wound_location)) %>%
+#   select(patient_id, wound_type, wound_location)
+# 
+# # 2. Recode wound_location into wound_loc_group (from stored code)
+# wound_type_location_data <- wound_type_location_data %>%
+#   mutate(wound_loc_group = case_when(
+#     wound_location %in% c("Head (unspecified)", "Head - front", "Head - back", "Neck") ~ "Head & neck",
+#     wound_location %in% c("Abdomen", "Chest", "Back", "Pelvis") ~ "Torso",
+#     wound_location %in% c("Shoulder", "Upper limb (unspecified)", "Hand") ~ "Upper limbs",
+#     wound_location %in% c("Lower limb (unspecified)", "Foot", "Knee") ~ "Lower limbs",
+#     TRUE ~ "Not specified"
+#   )) %>%
+#   mutate(wound_loc_group = factor(wound_loc_group, 
+#                                   levels = c("Head & neck", "Torso", "Upper limbs", "Lower limbs", "Not specified")))
+# 
+# # Define consistent ordering for wound types and location groups
+# wound_type_levels <- c("Physical assault", "Cold steel weapon", "Blast", "Gunshot", "Burn")
+# wound_loc_group_levels <- c("Head & neck", "Torso", "Upper limbs", "Lower limbs", "Not specified")
+# 
+# # Apply factor ordering
+# wound_type_location_data <- wound_type_location_data %>%
+#   mutate(
+#     wound_type = factor(wound_type, levels = wound_type_levels),
+#     wound_loc_group = factor(wound_loc_group, levels = wound_loc_group_levels)
+#   )
+# 
+# # 3. HEATMAP: Count of wounds by wound type and location group
+# heatmap_wound_data <- wound_type_location_data %>%
+#   group_by(wound_type, wound_loc_group) %>%
+#   summarise(count = n(), .groups = 'drop') %>%
+#   group_by(wound_type) %>%
+#   mutate(
+#     percentage_in_woundtype = count / sum(count) * 100
+#   ) %>%
+#   ungroup()
+# 
+# # Create heatmap
+# heatmap_wound <- ggplot(heatmap_wound_data, 
+#                        aes(x = wound_type,  
+#                            y = fct_rev(wound_loc_group),
+#                            fill = percentage_in_woundtype)) +
+#   geom_tile(color = "white", linewidth = 0.8) +
+#   geom_text(aes(label = count), color = "gray50", fontface = "bold", size = 4) +
+#   scale_fill_gradientn(
+#     colors = c("#abd9e9", "#ffffbf", "#fdae61", "#f46d43"),
+#     name = "Percentage\nwithin wound type",
+#     labels = scales::percent_format(scale = 1)
+#   ) +
+#   labs(
+#     title = "Wound Location Groups by Wound Type",
+#     x = "Wound Type",
+#     y = "Wound Location Group",
+#     fill = "% of Wound Type's\nLocations"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+#     axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+#     axis.text.y = element_text(size = 10),
+#     axis.title = element_text(size = 12),
+#     legend.title = element_text(size = 11),
+#     legend.text = element_text(size = 9),
+#     panel.grid = element_blank()
+#   )
+# 
+# # 4. STACKED COLUMN CHART: 100% stacked by wound type
+# stacked_wound_data <- wound_type_location_data %>%
+#   group_by(wound_type, wound_loc_group) %>%
+#   summarise(count = n(), .groups = 'drop') %>%
+#   group_by(wound_type) %>%
+#   mutate(
+#     percentage = count / sum(count) * 100
+#   ) %>%
+#   ungroup()
+# 
+# # Define color palette for wound location groups (consistent with stored code)
+# wound_loc_colors <- c(
+#   "Head & neck" = "#66C2A5",
+#   "Torso" = "#FC8D62",
+#   "Upper limbs" = "#8DA0CB",
+#   "Lower limbs" = "#E78AC3",
+#   "Not specified" = "#A6D854"
+# )
+# 
+# # Create 100% stacked column chart
+# stacked_wound_chart <- ggplot(stacked_wound_data, 
+#                              aes(x = wound_type, 
+#                                  y = percentage, 
+#                                  fill = wound_loc_group)) +
+#   geom_col(position = "fill", width = 0.8) +
+#   geom_text(
+#     aes(label = ifelse(percentage > 8, paste0(round(percentage, 0), "%"), "")),
+#     position = position_fill(vjust = 0.5),
+#     size = 3.2,
+#     color = "white",
+#     fontface = "bold"
+#   ) +
+#   scale_y_continuous(labels = scales::percent_format(), 
+#                      expand = expansion(mult = c(0, 0.05))) +
+#   scale_fill_manual(values = wound_loc_colors, name = "Wound Location Group") +
+#   labs(
+#     title = "Wound Location Group Distribution by Wound Type",
+#     x = "Wound Type",
+#     y = "Percentage of Wounds"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+#     axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+#     axis.text.y = element_text(size = 10),
+#     axis.title = element_text(size = 12),
+#     legend.position = "bottom",
+#     panel.grid.major = element_blank(),
+#     panel.grid.minor = element_blank()
+#   )
+# 
+# print(heatmap_wound)
+# print(stacked_wound_chart)
+```
+
+
+
+
+
+
+
